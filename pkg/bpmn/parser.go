@@ -96,6 +96,7 @@ func (p *Parser) ParseFile(path string) (*Process, error) {
 func (p *Parser) Parse(data []byte) (*Process, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.Strict = true
+	decoder.Entity = nil
 
 	var defs definitions
 	if err := decoder.Decode(&defs); err != nil {

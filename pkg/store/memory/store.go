@@ -17,7 +17,7 @@ type Store struct {
 	processes   map[string]*bpmn.Process
 	instances   map[string]*store.InstanceRecord
 	flows       map[string]*store.FlowRecord
-	threads     map[int]*store.ThreadRecord
+	threads     map[string]map[int]*store.ThreadRecord
 	jobs        map[string]*store.JobRecord
 	deadLetters map[string]*store.DeadLetterRecord
 	logs        []*store.ExecutionLogEntry
@@ -31,7 +31,7 @@ func NewStore() *Store {
 		processes:   make(map[string]*bpmn.Process),
 		instances:   make(map[string]*store.InstanceRecord),
 		flows:       make(map[string]*store.FlowRecord),
-		threads:     make(map[int]*store.ThreadRecord),
+		threads:     make(map[string]map[int]*store.ThreadRecord),
 		jobs:        make(map[string]*store.JobRecord),
 		deadLetters: make(map[string]*store.DeadLetterRecord),
 		logs:        make([]*store.ExecutionLogEntry, 0),
@@ -166,25 +166,33 @@ func (s *Store) CreateThread(_ context.Context, thread *store.ThreadRecord) erro
 	s.threadSeq++
 	thread.ID = s.threadSeq
 	thread.CreatedAt = time.Now()
-	s.threads[thread.ID] = thread
+
+	if _, ok := s.threads[thread.InstanceID]; !ok {
+		s.threads[thread.InstanceID] = make(map[int]*store.ThreadRecord)
+	}
+	s.threads[thread.InstanceID][thread.ThreadIndex] = thread
 	return nil
 }
 
 func (s *Store) UpdateThread(_ context.Context, thread *store.ThreadRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.threads[thread.ID] = thread
+	if instanceThreads, ok := s.threads[thread.InstanceID]; ok {
+		instanceThreads[thread.ThreadIndex] = thread
+	}
 	return nil
 }
 
 func (s *Store) GetThreadsByInstance(_ context.Context, instanceID string) ([]*store.ThreadRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*store.ThreadRecord
-	for _, t := range s.threads {
-		if t.InstanceID == instanceID {
-			result = append(result, t)
-		}
+	instanceThreads, ok := s.threads[instanceID]
+	if !ok {
+		return nil, nil
+	}
+	result := make([]*store.ThreadRecord, 0, len(instanceThreads))
+	for _, t := range instanceThreads {
+		result = append(result, t)
 	}
 	return result, nil
 }
@@ -192,8 +200,8 @@ func (s *Store) GetThreadsByInstance(_ context.Context, instanceID string) ([]*s
 func (s *Store) CloseThread(_ context.Context, instanceID string, threadIndex int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, t := range s.threads {
-		if t.InstanceID == instanceID && t.ThreadIndex == threadIndex {
+	if instanceThreads, ok := s.threads[instanceID]; ok {
+		if t, ok := instanceThreads[threadIndex]; ok {
 			t.Status = "CLOSED"
 		}
 	}
@@ -323,7 +331,7 @@ func (s *Store) Reset() {
 	s.processes = make(map[string]*bpmn.Process)
 	s.instances = make(map[string]*store.InstanceRecord)
 	s.flows = make(map[string]*store.FlowRecord)
-	s.threads = make(map[int]*store.ThreadRecord)
+	s.threads = make(map[string]map[int]*store.ThreadRecord)
 	s.jobs = make(map[string]*store.JobRecord)
 	s.deadLetters = make(map[string]*store.DeadLetterRecord)
 	s.logs = make([]*store.ExecutionLogEntry, 0)

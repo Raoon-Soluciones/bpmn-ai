@@ -87,6 +87,7 @@ func TestRetryPolicy_ApplyRetry(t *testing.T) {
 		Status:     store.JobStatusFailed,
 	}
 
+	before := time.Now()
 	rp.ApplyRetry(job, "connection timeout")
 
 	if job.RetryCount != 1 {
@@ -98,8 +99,12 @@ func TestRetryPolicy_ApplyRetry(t *testing.T) {
 	if job.Status != store.JobStatusPending {
 		t.Errorf("expected status PENDING, got %s", job.Status)
 	}
-	if job.ScheduledAt.Before(time.Now()) {
-		t.Error("expected scheduled at in the future")
+	if job.ScheduledAt.IsZero() {
+		t.Error("expected scheduled at to be set")
+	}
+	expectedMin := before.Add(50 * time.Millisecond)
+	if job.ScheduledAt.Before(expectedMin) {
+		t.Errorf("expected scheduled at after %v, got %v", expectedMin, job.ScheduledAt)
 	}
 	if job.ExecutedAt != nil {
 		t.Error("expected executed at to be nil after retry")

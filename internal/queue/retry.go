@@ -31,7 +31,7 @@ func DefaultRetryPolicy() *RetryPolicy {
 // NextRetryAt calculates when a job should be retried using exponential backoff.
 func (rp *RetryPolicy) NextRetryAt(retryCount int) time.Time {
 	delay := rp.BaseDelay * time.Duration(math.Pow(2, float64(retryCount)))
-	if delay > rp.MaxDelay {
+	if rp.MaxDelay > 0 && delay > rp.MaxDelay {
 		delay = rp.MaxDelay
 	}
 	if rp.Jitter {

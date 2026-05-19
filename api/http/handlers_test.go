@@ -10,6 +10,8 @@ import (
 
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
@@ -243,6 +245,19 @@ func TestGetCase_NotFound(t *testing.T) {
 
 func TestClaimTask(t *testing.T) {
 	srv := newTestServer(t)
+	s := srv.store.(*memory.Store)
+
+	flow := &store.FlowRecord{
+		ID:          testUUID,
+		InstanceID:  "test-instance",
+		ElementID:   "task-1",
+		ElementType: bpmn.ElementTypeUserTask,
+		ThreadID:    1,
+		Status:      store.FlowStatusActive,
+	}
+	if err := s.CreateFlow(nil, flow); err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
 
 	body := claimTaskRequest{UserID: "user-1"}
 	data, _ := json.Marshal(body)
@@ -260,6 +275,21 @@ func TestClaimTask(t *testing.T) {
 
 func TestCompleteTask(t *testing.T) {
 	srv := newTestServer(t)
+	s := srv.store.(*memory.Store)
+
+	now := time.Now()
+	flow := &store.FlowRecord{
+		ID:          testUUID,
+		InstanceID:  "test-instance",
+		ElementID:   "task-1",
+		ElementType: bpmn.ElementTypeUserTask,
+		ThreadID:    1,
+		Status:      store.FlowStatusActive,
+		StartedAt:   &now,
+	}
+	if err := s.CreateFlow(nil, flow); err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
 
 	body := completeTaskRequest{Variables: map[string]any{"approved": true}}
 	data, _ := json.Marshal(body)

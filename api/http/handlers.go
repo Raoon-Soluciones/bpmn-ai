@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -118,6 +119,11 @@ func (s *Server) startCase(w http.ResponseWriter, r *http.Request) {
 	var req startCaseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.Variables) > 100 {
+		writeError(w, http.StatusBadRequest, "too many variables (max 100)")
 		return
 	}
 
@@ -286,10 +292,28 @@ func (s *Server) claimTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	flow, err := s.store.GetFlow(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	if flow.Status != store.FlowStatusActive {
+		writeError(w, http.StatusConflict, "task is not available for claiming")
+		return
+	}
+
+	flow.Status = store.FlowStatusActive
+	if err := s.store.UpdateFlow(r.Context(), flow); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to claim task")
+		return
+	}
+
 	s.logger.Info("task claimed", "task_id", id, "user_id", req.UserID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"task_id": id,
+		"task_id":    id,
 		"claimed_by": req.UserID,
+		"status":     string(flow.Status),
 	})
 }
 
@@ -308,10 +332,37 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Variables) > 100 {
+		writeError(w, http.StatusBadRequest, "too many variables (max 100)")
+		return
+	}
+
+	flow, err := s.store.GetFlow(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	if flow.Status != store.FlowStatusActive {
+		writeError(w, http.StatusConflict, "task is not active")
+		return
+	}
+
+	now := time.Now()
+	flow.Status = store.FlowStatusCompleted
+	flow.FinishedAt = &now
+	d := int(time.Since(*flow.StartedAt).Milliseconds())
+	flow.DurationMs = &d
+
+	if err := s.store.UpdateFlow(r.Context(), flow); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to complete task")
+		return
+	}
+
 	s.logger.Info("task completed", "task_id", id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id": id,
-		"status":  "completed",
+		"status":  string(flow.Status),
 	})
 }
 

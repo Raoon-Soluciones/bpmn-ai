@@ -21,7 +21,7 @@ linters:
     - revive
     - bodyclose
     - noctx
-    - exportloopref
+    - copyloopvar
 
 linters-settings:
   errcheck:

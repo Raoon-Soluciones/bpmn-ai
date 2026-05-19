@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -39,11 +40,55 @@ func ChiRequestID(next http.Handler) http.Handler {
 	return middleware.RequestID(next)
 }
 
-// RateLimiter limits requests based on a token bucket algorithm.
-func RateLimiter(limiter *rate.Limiter) func(http.Handler) http.Handler {
+// IPRateLimiter limits requests per IP using token bucket algorithm.
+type IPRateLimiter struct {
+	mu      sync.RWMutex
+	clients map[string]*rate.Limiter
+	rate    rate.Limit
+	burst   int
+}
+
+// NewIPRateLimiter creates a new per-IP rate limiter.
+func NewIPRateLimiter(r rate.Limit, b int) *IPRateLimiter {
+	return &IPRateLimiter{
+		clients: make(map[string]*rate.Limiter),
+		rate:    r,
+		burst:   b,
+	}
+}
+
+// Allow checks if a request from the given IP is allowed.
+func (rl *IPRateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	limiter, exists := rl.clients[ip]
+	if !exists {
+		limiter = rate.NewLimiter(rl.rate, rl.burst)
+		rl.clients[ip] = limiter
+	}
+
+	return limiter.Allow()
+}
+
+// Cleanup removes inactive clients to prevent memory leaks.
+func (rl *IPRateLimiter) Cleanup() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	for ip, limiter := range rl.clients {
+		if limiter.Tokens() == float64(rl.burst) {
+			delete(rl.clients, ip)
+		}
+	}
+}
+
+// RateLimiter limits requests per IP based on a token bucket algorithm.
+func RateLimiter(limiter *IPRateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !limiter.Allow() {
+			ip := r.RemoteAddr
+			if !limiter.Allow(ip) {
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}

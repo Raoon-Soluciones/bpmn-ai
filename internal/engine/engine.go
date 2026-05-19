@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
@@ -97,6 +99,10 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 		return fmt.Errorf("create thread: %w", err)
 	}
 
+	// Create execution context with timeout
+	execCtx, cancel := context.WithTimeout(ctx, e.config.ExecutionTimeout)
+	defer cancel()
+
 	// Initialize fail-safe manager
 	failsafe := NewFailSafeManager(e.config.ExecutionTimeout, e.config.MaxLoops)
 
@@ -108,50 +114,37 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 	// Track active work to know when to stop
 	var pendingMu sync.Mutex
 	var pending int = 1 // initial flow
-	done := make(chan struct{})
-	var doneOnce sync.Once
 
 	// Start workers
 	var wg sync.WaitGroup
 	for i := 0; i < e.config.WorkerCount; i++ {
 		wg.Add(1)
-		go e.worker(ctx, instance, workCh, resultCh, &wg)
+		go e.worker(execCtx, instance, workCh, resultCh, &wg)
 	}
 
 	// Enqueue initial flow
 	workCh <- workItem{flow: initialFlow, threadID: 1}
 
-	// Signal when all work is done
-	go func() {
-		for {
-			pendingMu.Lock()
-			p := pending
-			pendingMu.Unlock()
-			if p == 0 {
-				doneOnce.Do(func() {
-					close(workCh)
-					close(done)
-				})
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-
 	// Process results
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-done:
-			// All work is done
+		case <-execCtx.Done():
+			close(workCh)
 			wg.Wait()
 			close(resultCh)
-			return e.finalizeInstance(ctx, instance)
+			if execCtx.Err() == context.DeadlineExceeded {
+				instance.Transition(process.StateError)
+				return &ExecutionTimeoutError{
+					Elapsed: e.config.ExecutionTimeout,
+					Limit:   e.config.ExecutionTimeout,
+				}
+			}
+			return execCtx.Err()
 
 		case result, ok := <-resultCh:
 			if !ok {
+				// Channel closed, all workers finished
+				wg.Wait()
 				return e.finalizeInstance(ctx, instance)
 			}
 
@@ -164,13 +157,33 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 			if result.FlowData != nil {
 				if err := failsafe.Check(result.FlowData.ElementID); err != nil {
 					instance.Transition(process.StateError)
+					close(workCh)
+					wg.Wait()
+					close(resultCh)
 					return err
 				}
 			}
 
-			// Handle result
-			if err := e.handleResult(ctx, instance, result, workCh, errCh, &pendingMu, &pending); err != nil {
+			// Handle result (may add more work or send error via errCh)
+			if err := e.handleResult(execCtx, instance, result, workCh, errCh, &pendingMu, &pending); err != nil {
 				return err
+			}
+
+			// If error was sent via errCh, wait for it
+			if result.Action == element.ActionError {
+				err := <-errCh
+				return err
+			}
+
+			// Check if all work is done after handleResult
+			pendingMu.Lock()
+			allDone := pending == 0
+			pendingMu.Unlock()
+			if allDone {
+				close(workCh)
+				wg.Wait()
+				close(resultCh)
+				return e.finalizeInstance(ctx, instance)
 			}
 
 		case err := <-errCh:
@@ -374,7 +387,7 @@ func (e *Engine) handleResult(
 				e.logger.Error("failed to enqueue job", "error", err)
 			}
 		} else {
-			job.ID = "job-" + job.InstanceID
+			job.ID = uuid.New().String()
 			job.Status = store.JobStatusPending
 			job.ScheduledAt = time.Now()
 			job.MaxRetries = 3

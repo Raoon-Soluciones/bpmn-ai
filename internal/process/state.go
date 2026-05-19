@@ -173,7 +173,7 @@ func (e *InvalidTransitionError) Error() string {
 
 func sanitizeVariables(vars map[string]any, depth int) map[string]any {
 	if depth > 3 {
-		return nil
+		return make(map[string]any)
 	}
 	sanitized := make(map[string]any, len(vars))
 	for k, v := range vars {
@@ -193,7 +193,7 @@ func sanitizeVariables(vars map[string]any, depth int) map[string]any {
 
 func sanitizeSlice(s []any, depth int) []any {
 	if depth > 3 {
-		return nil
+		return make([]any, 0)
 	}
 	result := make([]any, 0, len(s))
 	for _, v := range s {

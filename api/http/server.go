@@ -9,11 +9,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	cors "github.com/go-chi/cors"
+	"golang.org/x/time/rate"
+
 	"github.com/Raoon-Soluciones/bpmn-ai/api/middleware"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
-	"golang.org/x/time/rate"
 )
 
 // ServerConfig holds HTTP server configuration.
@@ -55,7 +56,7 @@ func NewServer(cfg ServerConfig, s store.Store, q *queue.WorkerPool, logger *obs
 	}))
 	r.Use(middleware.RequestLogger(logger, metrics))
 
-	limiter := rate.NewLimiter(rate.Every(time.Second), 100)
+	limiter := middleware.NewIPRateLimiter(rate.Every(time.Second/10), 20)
 	r.Use(middleware.RateLimiter(limiter))
 
 	srv := &Server{

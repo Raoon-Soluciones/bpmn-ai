@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+var version = "dev"
+
 type healthResponse struct {
 	Status    string    `json:"status"`
 	Timestamp time.Time `json:"timestamp"`
@@ -16,15 +18,34 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{
 		Status:    "ok",
 		Timestamp: time.Now(),
-		Version:   "0.1.0",
+		Version:   version,
 	})
 }
 
 func (s *Server) readinessCheck(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, healthResponse{
+			Status:    "not ready",
+			Timestamp: time.Now(),
+			Version:   version,
+		})
+		return
+	}
+
+	ctx := r.Context()
+	if _, err := s.store.ListProcesses(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, healthResponse{
+			Status:    "not ready",
+			Timestamp: time.Now(),
+			Version:   version,
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, healthResponse{
 		Status:    "ready",
 		Timestamp: time.Now(),
-		Version:   "0.1.0",
+		Version:   version,
 	})
 }
 
