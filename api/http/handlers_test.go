@@ -1,0 +1,479 @@
+package http
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/organization/bpmn-engine/internal/observability"
+	"github.com/organization/bpmn-engine/internal/queue"
+	"github.com/organization/bpmn-engine/pkg/store/memory"
+)
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+
+	store := memory.NewStore()
+	logger, _ := observability.NewFromConfig("error", "text")
+	metrics := observability.NewMetrics()
+	retry := queue.DefaultRetryPolicy()
+	dlq := queue.NewDeadLetterQueue(store)
+	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
+		Concurrency:  1,
+		PollInterval: 5 * time.Second,
+	})
+
+	return NewServer(ServerConfig{
+		Host:         "127.0.0.1",
+		Port:         0,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}, store, q, logger, metrics)
+}
+
+func TestHealthCheck(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp healthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Status != "ok" {
+		t.Errorf("expected status ok, got %s", resp.Status)
+	}
+}
+
+func TestReadinessCheck(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestCreateProcess(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := createProcessRequest{
+		Name: "Test Process",
+		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="proc-1" name="Test">
+    <startEvent id="start-1"/>
+    <endEvent id="end-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="end-1"/>
+  </process>
+</definitions>`,
+	}
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["id"] == "" {
+		t.Error("expected process ID")
+	}
+}
+
+func TestCreateProcess_Invalid(t *testing.T) {
+	srv := newTestServer(t)
+
+	tests := []struct {
+		name string
+		body any
+		want int
+	}{
+		{"empty body", nil, http.StatusBadRequest},
+		{"no name", createProcessRequest{BPMNXML: "not xml"}, http.StatusBadRequest},
+		{"no xml", createProcessRequest{Name: "test"}, http.StatusBadRequest},
+		{"invalid xml", createProcessRequest{Name: "test", BPMNXML: "not xml"}, http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var data []byte
+			if tt.body != nil {
+				data, _ = json.Marshal(tt.body)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			srv.Router().ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Errorf("expected %d, got %d: %s", tt.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestListProcesses(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var procs []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&procs); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(procs) != 0 {
+		t.Errorf("expected 0 processes, got %d", len(procs))
+	}
+}
+
+func TestStartCase(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := createProcessRequest{
+		Name: "Test Process",
+		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="proc-1" name="Test">
+    <startEvent id="start-1"/>
+    <endEvent id="end-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="end-1"/>
+  </process>
+</definitions>`,
+	}
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	var procResp map[string]any
+	json.NewDecoder(rec.Body).Decode(&procResp)
+	procID := procResp["id"].(string)
+
+	startBody := startCaseRequest{
+		Title:     "Test Case",
+		Variables: map[string]any{"amount": 5000},
+	}
+
+	data, _ = json.Marshal(startBody)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/processes/"+procID+"/start", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var caseResp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&caseResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if caseResp["id"] == "" {
+		t.Error("expected case ID")
+	}
+}
+
+func TestListCases(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestGetCase_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/nonexistent", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestClaimTask(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := claimTaskRequest{UserID: "user-1"}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/claim", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCompleteTask(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := completeTaskRequest{Variables: map[string]any{"approved": true}}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/complete", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetCaseHistory(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/history", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent case, got %d", rec.Code)
+	}
+}
+
+func TestGetCaseDiagram(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/diagram", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent case, got %d", rec.Code)
+	}
+}
+
+func TestGetCaseTasks(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/tasks", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestGetProcess_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes/nonexistent", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestStartCase_ProcessNotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := startCaseRequest{Title: "Test"}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes/nonexistent/start", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestCreateProcess_MissingFields(t *testing.T) {
+	srv := newTestServer(t)
+
+	tests := []struct {
+		name string
+		body createProcessRequest
+	}{
+		{"missing name", createProcessRequest{BPMNXML: "<xml/>"}},
+		{"missing xml", createProcessRequest{Name: "test"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			srv.Router().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestClaimTask_MissingUserID(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := claimTaskRequest{}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/claim", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestRequestID_Header(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-ID", "custom-id-123")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-Request-ID") != "custom-id-123" {
+		t.Errorf("expected X-Request-ID header to be custom-id-123, got %s", rec.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestFullProcessLifecycle(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := createProcessRequest{
+		Name: "Approval Process",
+		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="proc-approval" name="Approval">
+    <startEvent id="start-1"/>
+    <userTask id="task-1" name="Review" assignee="manager"/>
+    <endEvent id="end-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="task-1"/>
+    <sequenceFlow id="flow-2" sourceRef="task-1" targetRef="end-1"/>
+  </process>
+</definitions>`,
+	}
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create process: expected 201, got %d", rec.Code)
+	}
+
+	var procResp map[string]any
+	json.NewDecoder(rec.Body).Decode(&procResp)
+	procID := procResp["id"].(string)
+
+	startBody := startCaseRequest{
+		Title:     "Approval Request #1",
+		Variables: map[string]any{"amount": 10000},
+	}
+	data, _ = json.Marshal(startBody)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/processes/"+procID+"/start", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start case: expected 201, got %d", rec.Code)
+	}
+
+	var caseResp map[string]any
+	json.NewDecoder(rec.Body).Decode(&caseResp)
+	caseID := caseResp["id"].(string)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/cases/"+caseID, nil)
+	rec = httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get case: expected 200, got %d", rec.Code)
+	}
+
+	var caseDetail map[string]any
+	json.NewDecoder(rec.Body).Decode(&caseDetail)
+
+	if caseDetail["title"] != "Approval Request #1" {
+		t.Errorf("expected title 'Approval Request #1', got %v", caseDetail["title"])
+	}
+}

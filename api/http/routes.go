@@ -1,0 +1,33 @@
+package http
+
+import (
+	"github.com/go-chi/chi/v5"
+	"github.com/organization/bpmn-engine/internal/observability"
+)
+
+func (s *Server) routes() {
+	r := s.router
+
+	r.Get("/health", s.healthCheck)
+	r.Get("/ready", s.readinessCheck)
+
+	if s.metrics != nil {
+		r.Handle("/metrics", observability.DefaultMetrics().Handler())
+	}
+
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/processes", s.createProcess)
+		r.Get("/processes", s.listProcesses)
+		r.Get("/processes/{id}", s.getProcess)
+		r.Post("/processes/{id}/start", s.startCase)
+
+		r.Get("/cases", s.listCases)
+		r.Get("/cases/{id}", s.getCase)
+		r.Get("/cases/{id}/tasks", s.getCaseTasks)
+		r.Get("/cases/{id}/history", s.getCaseHistory)
+		r.Get("/cases/{id}/diagram", s.getCaseDiagram)
+
+		r.Post("/tasks/{id}/claim", s.claimTask)
+		r.Post("/tasks/{id}/complete", s.completeTask)
+	})
+}

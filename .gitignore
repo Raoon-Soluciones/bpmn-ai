@@ -1,0 +1,21 @@
+# Build artifacts
+bpmn-engine
+bin/
+
+# Coverage
+coverage.out
+coverage.html
+*.prof
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies
+vendor/

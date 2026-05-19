@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             targetNamespace="http://example.com/bpmn">
+  <process id="simple-sequence" name="Simple Sequence Process">
+    <startEvent id="start-1" name="Start"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="task-1"/>
+    <userTask id="task-1" name="Review Request" assignee="user-1"/>
+    <sequenceFlow id="flow-2" sourceRef="task-1" targetRef="gw-1"/>
+    <exclusiveGateway id="gw-1" name="Approved?" default="flow-4"/>
+    <sequenceFlow id="flow-3" sourceRef="gw-1" targetRef="task-2" conditionExpression="${approved}"/>
+    <sequenceFlow id="flow-4" sourceRef="gw-1" targetRef="end-rejected"/>
+    <userTask id="task-2" name="Process Approval" assignee="user-2"/>
+    <sequenceFlow id="flow-5" sourceRef="task-2" targetRef="end-approved"/>
+    <endEvent id="end-approved" name="Approved"/>
+    <endEvent id="end-rejected" name="Rejected"/>
+  </process>
+</definitions>

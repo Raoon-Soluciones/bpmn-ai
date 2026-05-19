@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/timer">
+  <process id="proc-timer" name="Timer Event Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <intermediateCatchEvent id="timer-1" name="Wait 1 Hour">
+      <timerEventDefinition>
+        <timeDuration>PT1H</timeDuration>
+      </timerEventDefinition>
+    </intermediateCatchEvent>
+    <userTask id="task-1" name="Follow Up" assignee="user-1"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="timer-1"/>
+    <sequenceFlow id="flow-2" sourceRef="timer-1" targetRef="task-1"/>
+    <sequenceFlow id="flow-3" sourceRef="task-1" targetRef="end-1"/>
+  </process>
+</definitions>

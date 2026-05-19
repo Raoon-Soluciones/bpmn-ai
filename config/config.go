@@ -1,0 +1,91 @@
+package config
+
+import (
+	"fmt"
+	"time"
+)
+
+// Config holds the engine configuration.
+type Config struct {
+	Server      ServerConfig
+	Database    DatabaseConfig
+	Engine      EngineConfig
+	Log         LogConfig
+}
+
+// ServerConfig holds HTTP server configuration.
+type ServerConfig struct {
+	Host         string
+	Port         int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+}
+
+// DatabaseConfig holds database connection configuration.
+type DatabaseConfig struct {
+	URL         string
+	MaxConns    int
+	MinConns    int
+	MaxIdleTime time.Duration
+}
+
+// EngineConfig holds BPMN engine configuration.
+type EngineConfig struct {
+	WorkerCount      int
+	MaxLoops         int
+	ExecutionTimeout time.Duration
+	QueuePollInterval time.Duration
+	MaxRetries       int
+}
+
+// LogConfig holds logging configuration.
+type LogConfig struct {
+	Level  string // debug, info, warn, error
+	Format string // json, text
+}
+
+// Default returns a configuration with sensible defaults.
+func Default() Config {
+	return Config{
+		Server: ServerConfig{
+			Host:         "0.0.0.0",
+			Port:         8080,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 30 * time.Second,
+		},
+		Database: DatabaseConfig{
+			URL:         "postgres://postgres:postgres@localhost:5432/bpmn?sslmode=disable",
+			MaxConns:    25,
+			MinConns:    5,
+			MaxIdleTime: 30 * time.Minute,
+		},
+		Engine: EngineConfig{
+			WorkerCount:       4,
+			MaxLoops:          100,
+			ExecutionTimeout:  30 * time.Second,
+			QueuePollInterval: 5 * time.Second,
+			MaxRetries:        3,
+		},
+		Log: LogConfig{
+			Level:  "info",
+			Format: "json",
+		},
+	}
+}
+
+// Validate checks the configuration for errors.
+func (c Config) Validate() error {
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("server port must be between 1 and 65535")
+	}
+	if c.Engine.WorkerCount < 1 {
+		return fmt.Errorf("engine worker count must be at least 1")
+	}
+	if c.Engine.MaxLoops < 1 {
+		return fmt.Errorf("engine max loops must be at least 1")
+	}
+	if c.Engine.ExecutionTimeout < 1*time.Second {
+		return fmt.Errorf("engine execution timeout must be at least 1 second")
+	}
+	return nil
+}

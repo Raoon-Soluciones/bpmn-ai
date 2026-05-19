@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/parallel">
+  <process id="proc-parallel" name="Parallel Gateway Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <parallelGateway id="gw-div" name="Split"/>
+    <userTask id="task-a" name="Task A" assignee="user-1"/>
+    <userTask id="task-b" name="Task B" assignee="user-2"/>
+    <parallelGateway id="gw-conv" name="Join"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="gw-div"/>
+    <sequenceFlow id="flow-2a" sourceRef="gw-div" targetRef="task-a"/>
+    <sequenceFlow id="flow-2b" sourceRef="gw-div" targetRef="task-b"/>
+    <sequenceFlow id="flow-3a" sourceRef="task-a" targetRef="gw-conv"/>
+    <sequenceFlow id="flow-3b" sourceRef="task-b" targetRef="gw-conv"/>
+    <sequenceFlow id="flow-4" sourceRef="gw-conv" targetRef="end-1"/>
+  </process>
+</definitions>

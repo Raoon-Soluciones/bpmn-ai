@@ -1,0 +1,30 @@
+# Build
+*.exe
+*.dll
+*.so
+*.dylib
+bpmn-engine
+
+# Test
+coverage.out
+coverage.html
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Dependencies
+go.sum
+
+# Docker
+.dockerignore

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/complex">
+  <process id="proc-complex" name="Complex Process" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <exclusiveGateway id="gw-type" name="Type Check" default="flow-standard"/>
+    <parallelGateway id="gw-parallel" name="Parallel Split"/>
+    <userTask id="task-review" name="Review" assignee="reviewer"/>
+    <scriptTask id="script-validate" name="Validate Data"/>
+    <serviceTask id="svc-notify" name="Send Notification"/>
+    <inclusiveGateway id="gw-include" name="Include Check"/>
+    <endEvent id="end-approved" name="Approved"/>
+    <endEvent id="end-rejected" name="Rejected"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="gw-type"/>
+    <sequenceFlow id="flow-premium" sourceRef="gw-type" targetRef="gw-parallel"/>
+    <sequenceFlow id="flow-standard" sourceRef="gw-type" targetRef="task-review"/>
+    <sequenceFlow id="flow-2a" sourceRef="gw-parallel" targetRef="script-validate"/>
+    <sequenceFlow id="flow-2b" sourceRef="gw-parallel" targetRef="svc-notify"/>
+    <sequenceFlow id="flow-3a" sourceRef="script-validate" targetRef="gw-include"/>
+    <sequenceFlow id="flow-3b" sourceRef="svc-notify" targetRef="gw-include"/>
+    <sequenceFlow id="flow-4" sourceRef="gw-include" targetRef="end-approved"/>
+    <sequenceFlow id="flow-5" sourceRef="task-review" targetRef="end-rejected"/>
+  </process>
+</definitions>
