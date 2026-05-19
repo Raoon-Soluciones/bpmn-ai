@@ -7,7 +7,17 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
+
+type mockInstance struct {
+	id string
+}
+
+func (m *mockInstance) GetID() string                     { return m.id }
+func (m *mockInstance) GetState() string                   { return "ACTIVE" }
+func (m *mockInstance) GetVariable(key string) (any, bool) { return nil, false }
+func (m *mockInstance) SetVariable(key string, value any)  {}
 
 type mockExecCtx struct {
 	flow      *store.FlowRecord
@@ -76,6 +86,141 @@ func TestExclusiveGateway_Execute(t *testing.T) {
 
 	if result.Action != element.ActionRoute {
 		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+}
+
+func TestExclusiveGateway_ConditionMatch(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-default",
+		Conditions:    map[string]string{"flow-a": "amount > 500"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"amount": 1000},
+	})
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-a" {
+		t.Errorf("expected flow-a to match, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_ConditionNoMatchUsesDefault(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-b",
+		Conditions:    map[string]string{"flow-a": "amount > 500"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"amount": 100},
+	})
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-b" {
+		t.Errorf("expected flow-b (default) to be selected, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_ConditionNoMatchAndNoDefaultUsesFirst(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		Conditions:    map[string]string{"flow-a": "amount > 500"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"amount": 100},
+	})
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-a" {
+		t.Errorf("expected first flow flow-a to be selected, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_ConditionBooleanVar(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-b",
+		Conditions:    map[string]string{"flow-a": "approved == true"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"approved": true},
+	})
+
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-a" {
+		t.Errorf("expected flow-a when approved=true, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_ConditionInvalidExpr(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-b",
+		Conditions:    map[string]string{"flow-a": "invalid {{{ expr"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"amount": 100},
+	})
+
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-b" {
+		t.Errorf("expected default flow-b on invalid expression, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_ConditionMissingVariable(t *testing.T) {
+	g, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-b",
+		Conditions:    map[string]string{"flow-a": "nonexistent > 0"},
+		OutgoingFlows: []string{"flow-a", "flow-b"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b"}},
+		variables: map[string]any{"amount": 100},
+	})
+
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "flow-b" {
+		t.Errorf("expected default flow-b when variable missing, got %v", result.FlowFilters)
+	}
+}
+
+func TestExclusiveGateway_CopyConditionsFromElement(t *testing.T) {
+	rawG, _ := NewExclusiveGateway(bpmn.Element{
+		ID:            "gw-1",
+		DefaultFlowID: "flow-b",
+		Conditions:    map[string]string{"flow-a": "amount > 0"},
+	})
+	eg := rawG.(*ExclusiveGateway)
+
+	if len(eg.Conditions()) != 1 || eg.Conditions()["flow-a"] != "amount > 0" {
+		t.Errorf("expected conditions to be copied from element, got %v", eg.Conditions())
 	}
 }
 
@@ -180,6 +325,52 @@ func TestInclusiveGateway_Execute(t *testing.T) {
 	}
 }
 
+func TestInclusiveGateway_ConditionEvaluation(t *testing.T) {
+	g, _ := NewInclusiveGateway(bpmn.Element{
+		ID:            "gw-inc-1",
+		DefaultFlowID: "flow-c",
+		Conditions:    map[string]string{"flow-a": "amount > 500", "flow-b": "priority == \"high\""},
+		OutgoingFlows: []string{"flow-a", "flow-b", "flow-c"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-inc-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b", "flow-c"}},
+		variables: map[string]any{"amount": 1000, "priority": "high"},
+	})
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	// flow-c has no condition so it's always included; flow-a and flow-b match
+	if len(result.FlowFilters) != 3 {
+		t.Errorf("expected 3 matching flows (2 conditions + 1 unconditional), got %v", result.FlowFilters)
+	}
+}
+
+func TestInclusiveGateway_ConditionPartialMatch(t *testing.T) {
+	g, _ := NewInclusiveGateway(bpmn.Element{
+		ID:            "gw-inc-1",
+		DefaultFlowID: "flow-c",
+		Conditions:    map[string]string{"flow-a": "amount > 500", "flow-b": "priority == \"high\""},
+		OutgoingFlows: []string{"flow-a", "flow-b", "flow-c"},
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "gw-inc-1"},
+		elem: bpmn.Element{OutgoingFlows: []string{"flow-a", "flow-b", "flow-c"}},
+		variables: map[string]any{"amount": 100, "priority": "high"},
+	})
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	// flow-a doesn't match (amount=100 not > 500), flow-b matches, flow-c has no condition
+	if len(result.FlowFilters) != 2 {
+		t.Errorf("expected 2 matching flows (flow-b + unconditional flow-c), got %v", result.FlowFilters)
+	}
+}
+
 func TestEventBasedGateway_Execute(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -264,21 +455,90 @@ func TestEventBasedGateway_NoElement(t *testing.T) {
 	}
 }
 
-func TestParallelGateway_Converging(t *testing.T) {
+func TestParallelGateway_Converging_Wait(t *testing.T) {
+	st := memory.NewStore()
+	instID := "inst-1"
+	_ = st.CreateFlow(context.Background(), &store.FlowRecord{
+		InstanceID:  instID,
+		ElementID:   "gw-p-1",
+		ElementType: bpmn.ElementTypeParallelGateway,
+		Status:      store.FlowStatusActive,
+	})
+
 	g, _ := NewParallelGateway(bpmn.Element{
 		ID: "gw-p-1", GatewayType: bpmn.GatewayTypeParallel,
 	})
 
 	result := g.Execute(context.Background(), &mockExecCtx{
-		flow: &store.FlowRecord{ElementID: "gw-p-1"},
-		elem: bpmn.Element{
-			IncomingFlows: []string{"flow-a", "flow-b"},
-			OutgoingFlows: []string{"flow-out"},
-		},
+		flow:   &store.FlowRecord{InstanceID: instID, ElementID: "gw-p-1"},
+		elem:   bpmn.Element{IncomingFlows: []string{"flow-a", "flow-b"}, OutgoingFlows: []string{"flow-out"}},
+		stored: st,
+	})
+
+	// Only 1 of 2 incoming flows have reached the gateway, should wait
+	if result.Action != element.ActionWait {
+		t.Errorf("expected ActionWait, got %s", result.Action)
+	}
+}
+
+func TestParallelGateway_Converging_Proceed(t *testing.T) {
+	st := memory.NewStore()
+	instID := "inst-1"
+	// Pre-create flow records for BOTH incoming flows reaching the gateway
+	for i := 0; i < 2; i++ {
+		_ = st.CreateFlow(context.Background(), &store.FlowRecord{
+			InstanceID:  instID,
+			ElementID:   "gw-p-1",
+			ElementType: bpmn.ElementTypeParallelGateway,
+			Status:      store.FlowStatusActive,
+		})
+	}
+
+	g, _ := NewParallelGateway(bpmn.Element{
+		ID: "gw-p-1", GatewayType: bpmn.GatewayTypeParallel,
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow:   &store.FlowRecord{InstanceID: instID, ElementID: "gw-p-1"},
+		elem:   bpmn.Element{IncomingFlows: []string{"flow-a", "flow-b"}, OutgoingFlows: []string{"flow-out"}},
+		stored: st,
 	})
 
 	if result.Action != element.ActionRoute {
 		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+}
+
+func TestParallelGateway_Converging_ErrorFlowIgnored(t *testing.T) {
+	st := memory.NewStore()
+	instID := "inst-1"
+	// Only 1 active flow + 1 errored flow
+	_ = st.CreateFlow(context.Background(), &store.FlowRecord{
+		InstanceID:  instID,
+		ElementID:   "gw-p-1",
+		ElementType: bpmn.ElementTypeParallelGateway,
+		Status:      store.FlowStatusActive,
+	})
+	_ = st.CreateFlow(context.Background(), &store.FlowRecord{
+		InstanceID:  instID,
+		ElementID:   "gw-p-1",
+		ElementType: bpmn.ElementTypeParallelGateway,
+		Status:      store.FlowStatusError,
+	})
+
+	g, _ := NewParallelGateway(bpmn.Element{
+		ID: "gw-p-1", GatewayType: bpmn.GatewayTypeParallel,
+	})
+
+	result := g.Execute(context.Background(), &mockExecCtx{
+		flow:   &store.FlowRecord{InstanceID: instID, ElementID: "gw-p-1"},
+		elem:   bpmn.Element{IncomingFlows: []string{"flow-a", "flow-b"}, OutgoingFlows: []string{"flow-out"}},
+		stored: st,
+	})
+
+	// Errored flow should not count toward completion, only 1 valid branch
+	if result.Action != element.ActionWait {
+		t.Errorf("expected ActionWait (error flow doesn't count), got %s", result.Action)
 	}
 }
 

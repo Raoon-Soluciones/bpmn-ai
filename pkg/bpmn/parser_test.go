@@ -83,6 +83,79 @@ func TestParser_Parse_SimpleSequence(t *testing.T) {
 	}
 }
 
+func TestParser_Parse_ExclusiveGatewayConditions(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="proc-3" name="Condition Process">
+    <startEvent id="start-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="gw-1"/>
+    <exclusiveGateway id="gw-1" name="Decision" default="flow-reject">
+      <extensionElements>
+        <condition flow="flow-approve">amount &lt;= 1000</condition>
+      </extensionElements>
+    </exclusiveGateway>
+    <sequenceFlow id="flow-approve" sourceRef="gw-1" targetRef="end-1"/>
+    <sequenceFlow id="flow-reject" sourceRef="gw-1" targetRef="end-2"/>
+    <endEvent id="end-1"/>
+    <endEvent id="end-2"/>
+  </process>
+</definitions>`
+
+	p := NewParser()
+	proc, err := p.Parse([]byte(xml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gw := proc.Elements["gw-1"]
+	if len(gw.Conditions) != 1 {
+		t.Errorf("expected 1 condition, got %d", len(gw.Conditions))
+	}
+	cond, ok := gw.Conditions["flow-approve"]
+	if !ok {
+		t.Errorf("expected condition for flow-approve")
+	}
+	if cond != "amount <= 1000" {
+		t.Errorf("expected 'amount <= 1000', got '%s'", cond)
+	}
+}
+
+func TestParser_Parse_FlowConditionExpression(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="proc-2" name="Gateway Process">
+    <startEvent id="start-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="gw-1"/>
+    <exclusiveGateway id="gw-1" name="Decision" default="flow-3"/>
+    <sequenceFlow id="flow-2" sourceRef="gw-1" targetRef="end-1" conditionExpression="${approved}"/>
+    <sequenceFlow id="flow-3" sourceRef="gw-1" targetRef="end-2"/>
+    <endEvent id="end-1"/>
+    <endEvent id="end-2"/>
+  </process>
+</definitions>`
+
+	p := NewParser()
+	proc, err := p.Parse([]byte(xml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	flow2 := proc.Flows["flow-2"]
+	if flow2.Condition != "${approved}" {
+		t.Errorf("expected condition ${approved}, got %s", flow2.Condition)
+	}
+
+	// Gateway should have condition populated from flow-level conditionExpression
+	gw := proc.Elements["gw-1"]
+	cond, ok := gw.Conditions["flow-2"]
+	if !ok {
+		t.Errorf("expected gateway to have condition for flow-2 from flow conditionExpression")
+	}
+	if cond != "${approved}" {
+		t.Errorf("expected '${approved}', got '%s'", cond)
+	}
+}
+
 func TestParser_Parse_ExclusiveGateway(t *testing.T) {
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">

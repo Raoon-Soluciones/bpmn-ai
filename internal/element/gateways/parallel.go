@@ -35,12 +35,10 @@ func (g *ParallelGateway) Type() bpmn.ElementType {
 }
 
 // Execute routes to all outgoing flows (diverging) or waits for all incoming (converging).
-func (g *ParallelGateway) Execute(_ context.Context, execCtx element.ExecutionContext) element.ExecutionResult {
+func (g *ParallelGateway) Execute(ctx context.Context, execCtx element.ExecutionContext) element.ExecutionResult {
 	flow := execCtx.Flow()
 	flow.Status = store.FlowStatusCompleted
 
-	// For diverging: route to all outgoing flows
-	// For converging: wait until all incoming flows are complete
 	elem, ok := execCtx.Element()
 	if !ok {
 		return element.ExecutionResult{
@@ -55,13 +53,12 @@ func (g *ParallelGateway) Execute(_ context.Context, execCtx element.ExecutionCo
 		return element.ExecutionResult{
 			Action:   element.ActionRoute,
 			FlowData: flow,
-			// No filters = route to all
 		}
 	}
 
-	// Converging: check if all incoming flows are complete
+	// Converging: check if all incoming flows have reached this gateway
 	if len(elem.IncomingFlows) > 1 {
-		allComplete := g.areAllIncomingComplete(execCtx)
+		allComplete := g.areAllIncomingComplete(ctx, execCtx)
 		if !allComplete {
 			return element.ExecutionResult{
 				Action:   element.ActionWait,
@@ -91,19 +88,25 @@ func (g *ParallelGateway) Conditions() map[string]string {
 	return nil
 }
 
-func (g *ParallelGateway) areAllIncomingComplete(execCtx element.ExecutionContext) bool {
-	_, ok := execCtx.Element()
+func (g *ParallelGateway) areAllIncomingComplete(ctx context.Context, execCtx element.ExecutionContext) bool {
+	elem, ok := execCtx.Element()
 	if !ok {
 		return false
 	}
 
-	// Check all incoming flows are complete
-	// This would need access to flow records from the store
-	// Simplified for now - in production, query store for flow statuses
-	_ = execCtx.Store()
+	flows, err := execCtx.Store().GetFlowsByInstance(ctx, execCtx.Flow().InstanceID)
+	if err != nil {
+		return false
+	}
 
-	// For now, assume all complete if we reached here
-	return true
+	arrived := 0
+	for _, f := range flows {
+		if f.ElementID == g.id && f.Status != store.FlowStatusError {
+			arrived++
+		}
+	}
+
+	return arrived >= len(elem.IncomingFlows)
 }
 
 func elementNotFoundError(id string) error {

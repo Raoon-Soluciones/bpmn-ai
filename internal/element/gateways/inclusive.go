@@ -3,6 +3,7 @@ package gateways
 import (
 	"context"
 
+	"github.com/Knetic/govaluate"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -99,6 +100,28 @@ func (g *InclusiveGateway) Conditions() map[string]string {
 	return g.conditions
 }
 
-func (g *InclusiveGateway) evaluateCondition(_ string, _ element.ExecutionContext) bool {
-	return true
+func (g *InclusiveGateway) evaluateCondition(condition string, execCtx element.ExecutionContext) bool {
+	if condition == "" {
+		return false
+	}
+
+	expression, err := govaluate.NewEvaluableExpression(condition)
+	if err != nil {
+		return false
+	}
+
+	params := make(map[string]interface{})
+	for _, varName := range expression.Vars() {
+		if val, ok := execCtx.GetVariable(varName); ok {
+			params[varName] = val
+		}
+	}
+
+	result, err := expression.Evaluate(params)
+	if err != nil {
+		return false
+	}
+
+	boolResult, ok := result.(bool)
+	return ok && boolResult
 }

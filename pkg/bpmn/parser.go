@@ -67,6 +67,7 @@ type extensionElements struct {
 
 type extensionValue struct {
 	XMLName xml.Name
+	Flow    string `xml:"flow,attr"`
 	Value   string `xml:",chardata"`
 }
 
@@ -148,6 +149,20 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 	// Wire incoming/outgoing flows
 	p.wireFlows(result)
 
+	// Populate gateway conditions from flow-level conditionExpression attributes
+	for id, elem := range result.Elements {
+		if isGatewayElement(elem.Type) {
+			for _, flowID := range elem.OutgoingFlows {
+				if flow, ok := result.Flows[flowID]; ok && flow.Condition != "" {
+					if _, exists := elem.Conditions[flowID]; !exists {
+						elem.Conditions[flowID] = flow.Condition
+					}
+				}
+			}
+			result.Elements[id] = elem
+		}
+	}
+
 	return result, nil
 }
 
@@ -225,10 +240,15 @@ func (p *Parser) parseGateway(fe flowElement) Element {
 		elem.GatewayType = GatewayTypeEventBased
 	}
 
-	// Parse extension data for conditions
+	// Parse extension data and conditions
 	if fe.ExtensionElements != nil {
+		elem.ExtensionData = make(map[string]string)
 		for _, ext := range fe.ExtensionElements.Values {
-			elem.ExtensionData[ext.XMLName.Local] = ext.Value
+			if ext.XMLName.Local == "condition" && ext.Flow != "" {
+				elem.Conditions[ext.Flow] = ext.Value
+			} else {
+				elem.ExtensionData[ext.XMLName.Local] = ext.Value
+			}
 		}
 	}
 
@@ -293,6 +313,11 @@ func (p *Parser) wireFlows(proc *Process) {
 			proc.Elements[flow.TargetRef] = elem
 		}
 	}
+}
+
+func isGatewayElement(t ElementType) bool {
+	return t == ElementTypeExclusiveGateway || t == ElementTypeInclusiveGateway ||
+		t == ElementTypeParallelGateway || t == ElementTypeEventBasedGateway
 }
 
 func splitCSV(s string) []string {

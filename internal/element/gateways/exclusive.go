@@ -3,6 +3,7 @@ package gateways
 import (
 	"context"
 
+	"github.com/Knetic/govaluate"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -19,12 +20,16 @@ type ExclusiveGateway struct {
 
 // NewExclusiveGateway creates a new exclusive gateway element.
 func NewExclusiveGateway(elem bpmn.Element) (element.Element, error) {
+	conds := make(map[string]string)
+	for k, v := range elem.Conditions {
+		conds[k] = v
+	}
 	return &ExclusiveGateway{
 		id:            elem.ID,
 		name:          elem.Name,
 		gatewayType:   elem.GatewayType,
 		defaultFlowID: elem.DefaultFlowID,
-		conditions:    make(map[string]string),
+		conditions:    conds,
 	}, nil
 }
 
@@ -116,8 +121,28 @@ func (g *ExclusiveGateway) getFirstOutgoingFlowID(execCtx element.ExecutionConte
 	return ""
 }
 
-func (g *ExclusiveGateway) evaluateCondition(_ string, _ element.ExecutionContext) bool {
-	// TODO: Implement expression evaluation
-	// For now, return true to allow routing
-	return true
+func (g *ExclusiveGateway) evaluateCondition(condition string, execCtx element.ExecutionContext) bool {
+	if condition == "" {
+		return false
+	}
+
+	expression, err := govaluate.NewEvaluableExpression(condition)
+	if err != nil {
+		return false
+	}
+
+	params := make(map[string]interface{})
+	for _, varName := range expression.Vars() {
+		if val, ok := execCtx.GetVariable(varName); ok {
+			params[varName] = val
+		}
+	}
+
+	result, err := expression.Evaluate(params)
+	if err != nil {
+		return false
+	}
+
+	boolResult, ok := result.(bool)
+	return ok && boolResult
 }
