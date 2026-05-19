@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -111,6 +112,54 @@ func TestStore_CreateGetFlow(t *testing.T) {
 	}
 	if got.ElementID != "start-1" {
 		t.Errorf("expected elementID start-1, got %s", got.ElementID)
+	}
+}
+
+func TestStore_UpdateFlow(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	flow := &store.FlowRecord{
+		ID:          "flow-1",
+		InstanceID:  "case-1",
+		ElementID:   "task-1",
+		ElementType: bpmn.ElementTypeUserTask,
+		Status:      store.FlowStatusActive,
+	}
+	if err := s.CreateFlow(ctx, flow); err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+
+	flow.Status = store.FlowStatusCompleted
+	now := time.Now()
+	flow.FinishedAt = &now
+	d := 100
+	flow.DurationMs = &d
+
+	if err := s.UpdateFlow(ctx, flow); err != nil {
+		t.Fatalf("update flow: %v", err)
+	}
+
+	got, err := s.GetFlow(ctx, "flow-1")
+	if err != nil {
+		t.Fatalf("get flow: %v", err)
+	}
+	if got.Status != store.FlowStatusCompleted {
+		t.Errorf("expected status COMPLETED, got %s", got.Status)
+	}
+	if got.FinishedAt == nil {
+		t.Errorf("expected FinishedAt to be set")
+	}
+	if got.DurationMs == nil || *got.DurationMs != 100 {
+		t.Errorf("expected DurationMs 100, got %v", got.DurationMs)
+	}
+}
+
+func TestStore_GetFlow_NotFound(t *testing.T) {
+	s := NewStore()
+	_, err := s.GetFlow(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent flow")
 	}
 }
 
