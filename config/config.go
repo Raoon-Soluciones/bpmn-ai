@@ -19,6 +19,8 @@ type ServerConfig struct {
 	Port         int
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	MaxBodySize  int64
+	AllowedOrigins []string
 }
 
 // DatabaseConfig holds database connection configuration.
@@ -48,10 +50,12 @@ type LogConfig struct {
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
-			Host:         "0.0.0.0",
-			Port:         8080,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			Host:             "0.0.0.0",
+			Port:             8080,
+			ReadTimeout:      15 * time.Second,
+			WriteTimeout:     30 * time.Second,
+			MaxBodySize:      10 << 20, // 10MB
+			AllowedOrigins:   []string{"https://localhost:3000"},
 		},
 		Database: DatabaseConfig{
 			URL:         "postgres://postgres:postgres@localhost:5432/bpmn?sslmode=disable",

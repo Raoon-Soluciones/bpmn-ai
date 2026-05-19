@@ -1,6 +1,7 @@
 package bpmn
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"os"
@@ -93,8 +94,11 @@ func (p *Parser) ParseFile(path string) (*Process, error) {
 
 // Parse parses BPMN XML data into a Process model.
 func (p *Parser) Parse(data []byte) (*Process, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	decoder.Strict = true
+
 	var defs definitions
-	if err := xml.Unmarshal(data, &defs); err != nil {
+	if err := decoder.Decode(&defs); err != nil {
 		return nil, fmt.Errorf("unmarshal bpmn xml: %w", err)
 	}
 

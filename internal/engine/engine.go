@@ -108,6 +108,8 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 	// Track active work to know when to stop
 	var pendingMu sync.Mutex
 	var pending int = 1 // initial flow
+	done := make(chan struct{})
+	var doneOnce sync.Once
 
 	// Start workers
 	var wg sync.WaitGroup
@@ -120,15 +122,16 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 	workCh <- workItem{flow: initialFlow, threadID: 1}
 
 	// Signal when all work is done
-	done := make(chan struct{})
 	go func() {
 		for {
 			pendingMu.Lock()
 			p := pending
 			pendingMu.Unlock()
 			if p == 0 {
-				close(workCh)
-				close(done)
+				doneOnce.Do(func() {
+					close(workCh)
+					close(done)
+				})
 				return
 			}
 			time.Sleep(10 * time.Millisecond)

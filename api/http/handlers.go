@@ -29,6 +29,8 @@ type completeTaskRequest struct {
 }
 
 func (s *Server) createProcess(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 	var req createProcessRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -47,7 +49,8 @@ func (s *Server) createProcess(w http.ResponseWriter, r *http.Request) {
 	parser := bpmn.NewParser()
 	proc, err := parser.Parse([]byte(req.BPMNXML))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid BPMN XML: "+err.Error())
+		s.logger.Error("bpmn parse error", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid BPMN XML format")
 		return
 	}
 
@@ -103,6 +106,8 @@ func (s *Server) getProcess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startCase(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "process id is required")
@@ -261,6 +266,8 @@ func (s *Server) getCaseDiagram(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) claimTask(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
@@ -286,6 +293,8 @@ func (s *Server) claimTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id is required")

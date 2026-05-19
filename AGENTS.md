@@ -2,51 +2,105 @@
 
 ## What this is
 
-SugarCRM module for ProcessMaker BPMN (Business Process Model and Notation). Installs into a SugarCRM instance under `modules/`. Not a standalone app — no `package.json`, `composer.json`, or local build/test tooling.
+Standalone BPMN 2.0 execution engine written in Go. High-performance, production-ready. Module path: `github.com/Raoon-Soluciones/bpmn-ai`.
 
-## Module structure
+## Project structure
 
 | Directory | Purpose |
 |---|---|
-| `pmse_Inbox/` | Core BPMN engine — case management, workflow execution, REST APIs |
-| `pmse_Project/` | Process definitions — BPMN elements (flows, gateways, events, forms, participants, lanes, etc.) |
-| `pmse_Business_Rules/` | Business rule definitions and export/import |
-| `pmse_Emails_Templates/` | Email template definitions for workflow notifications |
+| `cmd/engine/` | CLI entry point — wires deps, starts HTTP server, graceful shutdown |
+| `internal/engine/` | Core execution engine — iterative loop, flow router, fail-safe manager, element registry |
+| `internal/element/` | BPMN element implementations — events, gateways, activities, flows |
+| `internal/process/` | Process & thread management — state machine, instance lifecycle |
+| `internal/queue/` | Job queue system — worker pool, retry policy, dead letter queue |
+| `internal/observability/` | Logging, metrics, events — slog, Prometheus, event dispatcher |
+| `pkg/bpmn/` | BPMN model types & XML parser |
+| `pkg/store/` | Persistence interface + in-memory implementation (testing) |
+| `api/http/` | REST API with chi router — handlers, routes, health checks |
+| `api/middleware/` | HTTP middleware — logging, recovery, request ID |
+| `config/` | Configuration system |
+| `testdata/` | BPMN test files |
 
 ## Key architecture
 
-- **Engine core**: `pmse_Inbox/engine/PMSE.php` — singleton, registers all module paths
-- **Workflow execution**: `pmse_Inbox/engine/PMSEExecuter.php`, `PMSEFlowRouter.php`
-- **REST APIs**: `pmse_Inbox/clients/base/api/` — `PMSEEngineApi`, `PMSEEngineFilterApi`, `PMSEImageGeneratorApi`, `PMSECasesListApi`
-- **Controller**: `pmse_Inbox/controller.php` — SugarController subclass with actions for routing cases, showing process images (`action_showPNG`), case history, notes
-- **Factory pattern**: `ProcessManager\Factory::getPMSEObject()` — use this to instantiate engine objects, never `new` directly
-- **Logic hooks**: `pmse_Inbox/engine/PMSELogicHook.php` — SugarCRM event hooks for workflow triggers
+- **Engine core**: `internal/engine/engine.go` — iterative execution loop with goroutine workers (no recursion)
+- **Flow router**: `internal/engine/router.go` — determines next elements, handles parallel branches with thread tracking
+- **Fail-safe**: `internal/engine/failsafe.go` — timeout + loop detection
+- **Element registry**: `internal/engine/registry.go` — factory pattern for BPMN elements
+- **HTTP API**: `api/http/server.go` — chi router with middleware chain (logging, recovery, request ID, CORS)
+- **Job queue**: `internal/queue/worker.go` — worker pool with configurable concurrency, exponential backoff retry, dead letter queue
 
-## SugarCRM conventions (critical)
+## Supported BPMN elements
 
-- **Every PHP file** starts with `if(!defined('sugarEntry') || !sugarEntry) die('Not A Valid Entry Point');` — do not remove
-- `*_sugar.php` files are **auto-generated** by SugarCRM Module Builder — do not edit directly; extend them in the non-`_sugar` counterpart
-- `vardefs.php` defines bean schema and field metadata — changes require a **Quick Repair & Rebuild** in SugarCRM admin
-- `metadata/` contains view definitions (detail, edit, list, search, popup, dashlet)
-- `language/` contains 38 locale files — naming is `<lang>_<region>.lang.php`
-- `clients/base/` follows SugarCRM Sidecar framework structure (api, fields, filters, layouts, menus, plugins, views)
-- `clients/mobile/` for mobile-specific overrides
+| Category | Elements |
+|---|---|
+| **Events** | StartEvent, EndEvent, TerminateEvent, TimerEvent, MessageThrow, MessageCatch |
+| **Gateways** | ExclusiveGateway, ParallelGateway, InclusiveGateway, EventBasedGateway |
+| **Activities** | UserTask, ScriptTask, ServiceTask |
+| **Flows** | SequenceFlow |
 
-## Upgrade/install flow
+## State machine
 
-- `pmse_Project/upgrade/scripts/post/` — post-install/upgrade scripts
-- Module is distributed as a SugarCRM installable package (zip), not via composer/npm
+```
+CREATED → IN_PROGRESS → COMPLETED
+    │         │
+    │         ├──→ WAITING → IN_PROGRESS
+    │         │      └──→ TERMINATED
+    │         ├──→ SUSPENDED → IN_PROGRESS
+    │         └──→ ERROR → IN_PROGRESS
+    └──→ ERROR
+```
+
+## Conventions
+
+- **Go 1.23+** — use modern patterns, no external DI framework (factory functions)
+- **No ORM** — explicit queries via `pkg/store` interface (pgx for PostgreSQL, in-memory for tests)
+- **chi router** — idiomatic HTTP routing, no reflection overhead
+- **slog** — structured logging from stdlib, no external logger dependency
+- **Prometheus** — official `client_golang` for metrics
+- **Factory pattern** — `ElementRegistry.Register()` for element types, never hardcode
+- **Iterative execution** — goroutine workers + channels, no recursion
 
 ## How to verify changes
 
-There is no local test runner. Verification is done by:
-1. Packaging the module as a SugarCRM installable zip
-2. Installing into a SugarCRM instance
-3. Running **Admin > Repair > Quick Repair & Rebuild** after any vardefs/metadata changes
-4. Testing workflows through the SugarCRM UI or REST API
+```bash
+# Run all tests
+make test
+
+# Unit tests only
+make test-unit
+
+# Tests with coverage
+make test-coverage
+
+# Build binary
+make build
+
+# Lint
+make lint
+
+# Tidy dependencies
+make tidy
+```
+
+After any changes, run `go test -race -count=1 ./internal/... ./pkg/... ./api/... ./config/...` to verify.
+
+## Configuration
+
+Engine is configured via `config/` package with YAML + environment variables. Key settings:
+
+- `server.host` / `server.port` — HTTP listener
+- `database.url` — PostgreSQL connection string
+- `engine.worker_count` — goroutine worker concurrency
+- `engine.max_loops` — loop detection limit
+- `engine.execution_timeout` — per-execution timeout
+- `engine.queue_poll_interval` — job queue polling frequency
+- `log.level` / `log.format` — logging configuration
 
 ## Gotchas
 
-- `PMSE.php` lists 5 module paths including `pmse_Config` (not present in this repo — may be legacy or in a separate package)
-- `action_routeCase` in controller is marked `@deprecated since version pmse2` — do not extend
-- Case statuses use string values: `IN PROGRESS`, default PIN is `0000`, assigned status defaults to `UNASSIGNED`
+- `-race` flag requires `CGO_ENABLED=1` and a C compiler (gcc/MinGW on Windows). Use `go test -count=1 ./...` if cgo is unavailable.
+- ServiceTask uses `ActionQueue` — routes to async job queue, process continues without waiting for completion.
+- UserTask uses `ActionForm` — instance transitions to `WAITING` state until task is completed externally.
+- ParallelGateway creates new threads for each branch — thread index formula: `parentThreadIdx * 10 + branchIndex + 1`.
+- The in-memory store (`pkg/store/memory/`) is for testing only — production uses PostgreSQL via `pkg/store/sql/`.

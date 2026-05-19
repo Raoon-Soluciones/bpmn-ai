@@ -1,6 +1,8 @@
 package process
 
 import (
+	"crypto/rand"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,13 +69,14 @@ func NewInstance(proc *bpmn.Process, variables map[string]any) *Instance {
 	if variables == nil {
 		variables = make(map[string]any)
 	}
+	sanitized := sanitizeVariables(variables)
 	return &Instance{
 		ID:        uuid.New().String(),
 		ProcessID: proc.ID,
 		Process:   proc,
 		State:     StateCreated,
-		Variables: variables,
-		PIN:       "0000",
+		Variables: sanitized,
+		PIN:       generatePIN(),
 		Threads:   make([]*Thread, 0),
 		StartedAt: now,
 		UpdatedAt: now,
@@ -165,4 +168,40 @@ type InvalidTransitionError struct {
 
 func (e *InvalidTransitionError) Error() string {
 	return "invalid state transition: " + string(e.From) + " -> " + string(e.To)
+}
+
+func sanitizeVariables(vars map[string]any) map[string]any {
+	sanitized := make(map[string]any, len(vars))
+	for k, v := range vars {
+		switch val := v.(type) {
+		case string, bool, int, int64, float64, nil:
+			sanitized[k] = val
+		case []any:
+			sanitized[k] = sanitizeSlice(val)
+		default:
+			sanitized[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return sanitized
+}
+
+func sanitizeSlice(s []any) []any {
+	result := make([]any, 0, len(s))
+	for _, v := range s {
+		switch val := v.(type) {
+		case string, bool, int, int64, float64, nil:
+			result = append(result, val)
+		default:
+			result = append(result, fmt.Sprintf("%v", v))
+		}
+	}
+	return result
+}
+
+func generatePIN() string {
+	b := make([]byte, 2)
+	if _, err := rand.Read(b); err != nil {
+		return "0000"
+	}
+	return fmt.Sprintf("%04d", int(b[0])%10000)
 }

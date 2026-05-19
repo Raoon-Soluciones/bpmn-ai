@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 )
 
 type requestIDKey struct{}
@@ -36,4 +37,17 @@ func GetRequestID(ctx context.Context) string {
 // ChiRequestID integrates with chi's middleware request ID.
 func ChiRequestID(next http.Handler) http.Handler {
 	return middleware.RequestID(next)
+}
+
+// RateLimiter limits requests based on a token bucket algorithm.
+func RateLimiter(limiter *rate.Limiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.Allow() {
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

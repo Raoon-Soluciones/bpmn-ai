@@ -13,15 +13,18 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
+	"golang.org/x/time/rate"
 )
 
 // ServerConfig holds HTTP server configuration.
 type ServerConfig struct {
-	Host         string
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	Host           string
+	Port           int
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
+	MaxBodySize    int64
+	AllowedOrigins []string
 }
 
 // Server is the HTTP API server.
@@ -43,7 +46,7 @@ func NewServer(cfg ServerConfig, s store.Store, q *queue.WorkerPool, logger *obs
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recovery(logger))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://*", "http://*"},
+		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
 		ExposedHeaders:   []string{"X-Request-ID"},
@@ -51,6 +54,9 @@ func NewServer(cfg ServerConfig, s store.Store, q *queue.WorkerPool, logger *obs
 		MaxAge:           300,
 	}))
 	r.Use(middleware.RequestLogger(logger, metrics))
+
+	limiter := rate.NewLimiter(rate.Every(time.Second), 100)
+	r.Use(middleware.RateLimiter(limiter))
 
 	srv := &Server{
 		config:  cfg,

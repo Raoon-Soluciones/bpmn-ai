@@ -1,9 +1,10 @@
 package queue
 
 import (
+	"crypto/rand"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/big"
 	"time"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -34,7 +35,13 @@ func (rp *RetryPolicy) NextRetryAt(retryCount int) time.Time {
 		delay = rp.MaxDelay
 	}
 	if rp.Jitter {
-		delay = delay + time.Duration(rand.Int63n(int64(delay)/4))
+		jitterRange := int64(delay) / 4
+		if jitterRange > 0 {
+			j, err := rand.Int(rand.Reader, big.NewInt(jitterRange))
+			if err == nil {
+				delay = delay + time.Duration(j.Int64())
+			}
+		}
 	}
 	return time.Now().Add(delay)
 }
