@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -88,7 +89,7 @@ func (s *Server) listProcesses(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getProcess(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -109,7 +110,7 @@ func (s *Server) startCase(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "process id is required")
 		return
 	}
@@ -166,7 +167,7 @@ func (s *Server) listCases(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCase(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -188,7 +189,7 @@ func (s *Server) getCase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCaseTasks(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -218,7 +219,7 @@ func (s *Server) getCaseTasks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCaseHistory(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -240,7 +241,7 @@ func (s *Server) getCaseHistory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCaseDiagram(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -269,7 +270,7 @@ func (s *Server) claimTask(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -296,7 +297,7 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 
 	id := chi.URLParam(r, "id")
-	if id == "" {
+	if id == "" || !isValidUUID(id) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
@@ -312,4 +313,9 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 		"task_id": id,
 		"status":  "completed",
 	})
+}
+
+func isValidUUID(id string) bool {
+	_, err := uuid.Parse(id)
+	return err == nil
 }

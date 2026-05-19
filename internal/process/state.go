@@ -3,6 +3,7 @@ package process
 import (
 	"crypto/rand"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,7 +70,7 @@ func NewInstance(proc *bpmn.Process, variables map[string]any) *Instance {
 	if variables == nil {
 		variables = make(map[string]any)
 	}
-	sanitized := sanitizeVariables(variables)
+	sanitized := sanitizeVariables(variables, 0)
 	return &Instance{
 		ID:        uuid.New().String(),
 		ProcessID: proc.ID,
@@ -170,14 +171,19 @@ func (e *InvalidTransitionError) Error() string {
 	return "invalid state transition: " + string(e.From) + " -> " + string(e.To)
 }
 
-func sanitizeVariables(vars map[string]any) map[string]any {
+func sanitizeVariables(vars map[string]any, depth int) map[string]any {
+	if depth > 3 {
+		return nil
+	}
 	sanitized := make(map[string]any, len(vars))
 	for k, v := range vars {
 		switch val := v.(type) {
 		case string, bool, int, int64, float64, nil:
 			sanitized[k] = val
 		case []any:
-			sanitized[k] = sanitizeSlice(val)
+			sanitized[k] = sanitizeSlice(val, depth+1)
+		case map[string]any:
+			sanitized[k] = sanitizeVariables(val, depth+1)
 		default:
 			sanitized[k] = fmt.Sprintf("%v", v)
 		}
@@ -185,12 +191,19 @@ func sanitizeVariables(vars map[string]any) map[string]any {
 	return sanitized
 }
 
-func sanitizeSlice(s []any) []any {
+func sanitizeSlice(s []any, depth int) []any {
+	if depth > 3 {
+		return nil
+	}
 	result := make([]any, 0, len(s))
 	for _, v := range s {
 		switch val := v.(type) {
 		case string, bool, int, int64, float64, nil:
 			result = append(result, val)
+		case []any:
+			result = append(result, sanitizeSlice(val, depth+1))
+		case map[string]any:
+			result = append(result, sanitizeVariables(val, depth+1))
 		default:
 			result = append(result, fmt.Sprintf("%v", v))
 		}
@@ -199,9 +212,10 @@ func sanitizeSlice(s []any) []any {
 }
 
 func generatePIN() string {
-	b := make([]byte, 2)
-	if _, err := rand.Read(b); err != nil {
+	max := big.NewInt(10000)
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
 		return "0000"
 	}
-	return fmt.Sprintf("%04d", int(b[0])%10000)
+	return fmt.Sprintf("%04d", n.Int64())
 }

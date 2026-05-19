@@ -108,6 +108,9 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 
 	// Parse the first process (for now)
 	proc := defs.Processes[0]
+	if len(proc.FlowElements) > 500 {
+		return nil, fmt.Errorf("process exceeds maximum of 500 elements")
+	}
 	result := &Process{
 		ID:              proc.ID,
 		Name:            proc.Name,

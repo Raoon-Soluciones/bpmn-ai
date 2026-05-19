@@ -13,6 +13,8 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
+const testUUID = "123e4567-e89b-12d3-a456-426614174000"
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -77,7 +79,7 @@ func TestCreateProcess(t *testing.T) {
 		Name: "Test Process",
 		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
-  <process id="proc-1" name="Test">
+  <process id="123e4567-e89b-12d3-a456-426614174000" name="Test">
     <startEvent id="start-1"/>
     <endEvent id="end-1"/>
     <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="end-1"/>
@@ -169,7 +171,7 @@ func TestStartCase(t *testing.T) {
 		Name: "Test Process",
 		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
-  <process id="proc-1" name="Test">
+  <process id="123e4567-e89b-12d3-a456-426614174000" name="Test">
     <startEvent id="start-1"/>
     <endEvent id="end-1"/>
     <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="end-1"/>
@@ -229,7 +231,7 @@ func TestListCases(t *testing.T) {
 func TestGetCase_NotFound(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/"+testUUID, nil)
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -245,7 +247,7 @@ func TestClaimTask(t *testing.T) {
 	body := claimTaskRequest{UserID: "user-1"}
 	data, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/claim", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+testUUID+"/claim", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -262,7 +264,7 @@ func TestCompleteTask(t *testing.T) {
 	body := completeTaskRequest{Variables: map[string]any{"approved": true}}
 	data, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/complete", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+testUUID+"/complete", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -276,7 +278,7 @@ func TestCompleteTask(t *testing.T) {
 func TestGetCaseHistory(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/history", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/"+testUUID+"/history", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -289,7 +291,7 @@ func TestGetCaseHistory(t *testing.T) {
 func TestGetCaseDiagram(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/diagram", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/"+testUUID+"/diagram", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -302,7 +304,7 @@ func TestGetCaseDiagram(t *testing.T) {
 func TestGetCaseTasks(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/case-1/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cases/"+testUUID+"/tasks", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -315,7 +317,7 @@ func TestGetCaseTasks(t *testing.T) {
 func TestGetProcess_NotFound(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes/"+testUUID, nil)
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -331,7 +333,7 @@ func TestStartCase_ProcessNotFound(t *testing.T) {
 	body := startCaseRequest{Title: "Test"}
 	data, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes/nonexistent/start", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes/"+testUUID+"/start", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -375,7 +377,7 @@ func TestClaimTask_MissingUserID(t *testing.T) {
 	body := claimTaskRequest{}
 	data, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/claim", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+testUUID+"/claim", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -420,7 +422,7 @@ func TestFullProcessLifecycle(t *testing.T) {
 		Name: "Approval Process",
 		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
-  <process id="proc-approval" name="Approval">
+  <process id="123e4567-e89b-12d3-a456-426614174001" name="Approval">
     <startEvent id="start-1"/>
     <userTask id="task-1" name="Review" assignee="manager"/>
     <endEvent id="end-1"/>
