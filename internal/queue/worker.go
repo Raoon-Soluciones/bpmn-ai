@@ -103,25 +103,26 @@ func (wp *WorkerPool) processBatch(ctx context.Context) {
 }
 
 func (wp *WorkerPool) processJob(ctx context.Context, job *store.JobRecord) {
-	// Copy to avoid data race: job is a shared pointer from GetPendingJobs;
-	// modifications below must not race with concurrent readers of the store's map.
-	j := *job
+	// Heap-allocate a copy so the pointer survives processJob and
+	// concurrent readers of the store's map never access a stale stack frame.
+	j := new(store.JobRecord)
+	*j = *job
 	j.Status = store.JobStatusRunning
 	now := time.Now()
 	j.ExecutedAt = &now
-	if err := wp.store.UpdateJob(ctx, &j); err != nil {
+	if err := wp.store.UpdateJob(ctx, j); err != nil {
 		return
 	}
 
 	if wp.handler == nil {
-		wp.completeJob(ctx, &j)
+		wp.completeJob(ctx, j)
 		return
 	}
 
-	if err := wp.handler(ctx, &j); err != nil {
-		wp.failJob(ctx, &j, err)
+	if err := wp.handler(ctx, j); err != nil {
+		wp.failJob(ctx, j, err)
 	} else {
-		wp.completeJob(ctx, &j)
+		wp.completeJob(ctx, j)
 	}
 }
 
