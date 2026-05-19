@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"github.com/organization/bpmn-engine/internal/element"
-	"github.com/organization/bpmn-engine/pkg/bpmn"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // NextFlow represents a flow that should be executed next.

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/organization/bpmn-engine/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 )
 
 // RequestLogger logs HTTP requests with structured logging.

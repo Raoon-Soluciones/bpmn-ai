@@ -3,7 +3,7 @@ package queue
 import (
 	"context"
 
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // DeadLetterQueue stores jobs that exceeded all retry attempts.

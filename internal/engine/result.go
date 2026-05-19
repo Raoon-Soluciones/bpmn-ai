@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"github.com/organization/bpmn-engine/internal/element"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // ExecutionResult aliases the element package type for convenience.

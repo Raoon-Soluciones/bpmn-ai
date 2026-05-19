@@ -3,8 +3,8 @@ package element
 import (
 	"context"
 
-	"github.com/organization/bpmn-engine/pkg/bpmn"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // Action represents the action the engine should take after element execution.

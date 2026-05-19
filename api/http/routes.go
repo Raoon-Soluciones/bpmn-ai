@@ -2,7 +2,7 @@ package http
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/organization/bpmn-engine/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 )
 
 func (s *Server) routes() {

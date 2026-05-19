@@ -1,7 +1,7 @@
 .PHONY: test test-unit test-integration test-e2e test-coverage bench fuzz lint tidy build
 
 build:
-	go build -o bin/bpmn-engine ./cmd/engine
+	go build -o bin/bpmn-ai ./cmd/engine
 
 test: test-unit test-integration test-e2e
 

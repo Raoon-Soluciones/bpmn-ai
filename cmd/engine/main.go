@@ -8,11 +8,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/organization/bpmn-engine/api/http"
-	"github.com/organization/bpmn-engine/config"
-	"github.com/organization/bpmn-engine/internal/observability"
-	"github.com/organization/bpmn-engine/internal/queue"
-	"github.com/organization/bpmn-engine/pkg/store/memory"
+	"github.com/Raoon-Soluciones/bpmn-ai/api/http"
+	"github.com/Raoon-Soluciones/bpmn-ai/config"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
 func main() {

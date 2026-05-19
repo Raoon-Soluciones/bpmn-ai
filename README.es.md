@@ -10,7 +10,7 @@
 
 ```bash
 # Clonar y ejecutar
-git clone https://github.com/organization/bpmn-engine.git && cd bpmn-engine
+git clone https://github.com/Raoon-Soluciones/bpmn-ai.git && cd bpmn-ai
 go run ./cmd/engine
 ```
 
@@ -97,15 +97,15 @@ go run ./cmd/engine
 ### Opción 2: Compilar y ejecutar (producción)
 
 ```bash
-go build -o bpmn-engine ./cmd/engine
-./bpmn-engine
+go build -o bpmn-ai ./cmd/engine
+./bpmn-ai
 ```
 
 ### Opción 3: Docker
 
 ```bash
-docker build -t bpmn-engine:latest .
-docker run -p 8080:8080 bpmn-engine:latest
+docker build -t bpmn-ai:latest .
+docker run -p 8080:8080 bpmn-ai:latest
 ```
 
 ### Opción 4: Docker Compose (con PostgreSQL)
@@ -401,7 +401,7 @@ Los eventos pueden ser consumidos sincrónica o asincrónicamente vía el `Dispa
 ## Estructura del Proyecto
 
 ```
-bpmn-engine/
+bpmn-ai/
 ├── cmd/engine/                    # Punto de entrada CLI
 │   └── main.go                    # Conectar dependencias, graceful shutdown
 ├── internal/                      # Código privado de aplicación
@@ -650,14 +650,14 @@ import (
     "log"
     "time"
 
-    "github.com/organization/bpmn-engine/internal/engine"
-    "github.com/organization/bpmn-engine/internal/element/events"
-    "github.com/organization/bpmn-engine/internal/element/gateways"
-    "github.com/organization/bpmn-engine/internal/observability"
-    "github.com/organization/bpmn-engine/internal/process"
-    "github.com/organization/bpmn-engine/pkg/bpmn"
-    "github.com/organization/bpmn-engine/pkg/store/memory"
-    "github.com/organization/bpmn-engine/internal/queue"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/process"
+    "github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+    "github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 )
 
 func main() {

@@ -5,9 +5,9 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/organization/bpmn-engine/internal/process"
-	"github.com/organization/bpmn-engine/pkg/bpmn"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 type createProcessRequest struct {

@@ -9,10 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	cors "github.com/go-chi/cors"
-	"github.com/organization/bpmn-engine/api/middleware"
-	"github.com/organization/bpmn-engine/internal/observability"
-	"github.com/organization/bpmn-engine/internal/queue"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/api/middleware"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // ServerConfig holds HTTP server configuration.

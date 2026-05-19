@@ -1,4 +1,4 @@
-module github.com/organization/bpmn-engine
+module github.com/Raoon-Soluciones/bpmn-ai
 
 go 1.23.0
 

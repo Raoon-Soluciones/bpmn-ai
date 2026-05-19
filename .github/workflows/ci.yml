@@ -63,13 +63,13 @@ jobs:
         run: go mod download
 
       - name: Build
-        run: GOOS=${{matrix.goos}} GOARCH=${{matrix.goarch}} go build -o bpmn-engine-${{matrix.goos}}-${{matrix.goarch}} ./cmd/engine
+        run: GOOS=${{matrix.goos}} GOARCH=${{matrix.goarch}} go build -o bpmn-ai-${{matrix.goos}}-${{matrix.goarch}} ./cmd/engine
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bpmn-engine-${{matrix.goos}}-${{matrix.goarch}}
-          path: bpmn-engine-${{matrix.goos}}-${{matrix.goarch}}
+          name: bpmn-ai-${{matrix.goos}}-${{matrix.goarch}}
+          path: bpmn-ai-${{matrix.goos}}-${{matrix.goarch}}
 
   docker:
     needs: test
@@ -77,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -t bpmn-engine:latest .
+        run: docker build -t bpmn-ai:latest .
 
       - name: Test Docker image
-        run: docker run --rm bpmn-engine:latest --help || true
+        run: docker run --rm bpmn-ai:latest --help || true

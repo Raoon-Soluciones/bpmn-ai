@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bpmn-engine ./cmd/engine
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bpmn-ai ./cmd/engine
 
 FROM alpine:3.20
 
@@ -19,8 +19,8 @@ USER bpmn
 
 WORKDIR /app
 
-COPY --from=builder /bpmn-engine /app/bpmn-engine
+COPY --from=builder /bpmn-ai /app/bpmn-ai
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/bpmn-engine"]
+ENTRYPOINT ["/app/bpmn-ai"]

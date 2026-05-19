@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // JobHandler processes a single job. Returns nil on success, error on failure.

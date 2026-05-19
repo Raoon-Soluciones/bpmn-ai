@@ -10,7 +10,7 @@
 
 ```bash
 # Clone & run
-git clone https://github.com/organization/bpmn-engine.git && cd bpmn-engine
+git clone https://github.com/Raoon-Soluciones/bpmn-ai.git && cd bpmn-ai
 go run ./cmd/engine
 ```
 
@@ -97,15 +97,15 @@ go run ./cmd/engine
 ### Option 2: Build + run (production)
 
 ```bash
-go build -o bpmn-engine ./cmd/engine
-./bpmn-engine
+go build -o bpmn-ai ./cmd/engine
+./bpmn-ai
 ```
 
 ### Option 3: Docker
 
 ```bash
-docker build -t bpmn-engine:latest .
-docker run -p 8080:8080 bpmn-engine:latest
+docker build -t bpmn-ai:latest .
+docker run -p 8080:8080 bpmn-ai:latest
 ```
 
 ### Option 4: Docker Compose (with PostgreSQL)
@@ -401,7 +401,7 @@ Events can be consumed synchronously or asynchronously via the `Dispatcher`.
 ## Project Structure
 
 ```
-bpmn-engine/
+bpmn-ai/
 ├── cmd/engine/                    # CLI entry point
 │   └── main.go                    # Wire deps, graceful shutdown
 ├── internal/                      # Private application code
@@ -650,14 +650,14 @@ import (
     "log"
     "time"
 
-    "github.com/organization/bpmn-engine/internal/engine"
-    "github.com/organization/bpmn-engine/internal/element/events"
-    "github.com/organization/bpmn-engine/internal/element/gateways"
-    "github.com/organization/bpmn-engine/internal/observability"
-    "github.com/organization/bpmn-engine/internal/process"
-    "github.com/organization/bpmn-engine/pkg/bpmn"
-    "github.com/organization/bpmn-engine/pkg/store/memory"
-    "github.com/organization/bpmn-engine/internal/queue"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/process"
+    "github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+    "github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
+    "github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 )
 
 func main() {

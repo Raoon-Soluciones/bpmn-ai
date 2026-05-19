@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/organization/bpmn-engine/pkg/store"
-	"github.com/organization/bpmn-engine/pkg/store/memory"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
 func TestRetryPolicy_NextRetryAt(t *testing.T) {

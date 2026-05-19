@@ -3,7 +3,7 @@
 *.dll
 *.so
 *.dylib
-bpmn-engine
+bpmn-ai
 
 # Test
 coverage.out

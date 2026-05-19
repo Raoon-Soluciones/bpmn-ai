@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/organization/bpmn-engine/internal/observability"
-	"github.com/organization/bpmn-engine/internal/queue"
-	"github.com/organization/bpmn-engine/pkg/store/memory"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
 func newTestServer(t *testing.T) *Server {

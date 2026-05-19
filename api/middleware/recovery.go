@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/organization/bpmn-engine/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 )
 
 // Recovery recovers from panics and returns a 500 error.

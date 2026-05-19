@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/organization/bpmn-engine/internal/element"
-	"github.com/organization/bpmn-engine/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 )
 
 type TimerEvent struct {

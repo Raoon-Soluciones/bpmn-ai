@@ -3,9 +3,9 @@ package gateways
 import (
 	"context"
 
-	"github.com/organization/bpmn-engine/internal/element"
-	"github.com/organization/bpmn-engine/pkg/bpmn"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // ParallelGateway implements the BPMN parallel gateway.

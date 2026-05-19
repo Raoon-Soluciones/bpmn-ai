@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/organization/bpmn-engine/pkg/bpmn"
-	"github.com/organization/bpmn-engine/pkg/store"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 func TestStore_SaveAndGetProcess(t *testing.T) {
