@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/Raoon-Soluciones/bpmn-ai/api/http"
 	"github.com/Raoon-Soluciones/bpmn-ai/config"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
@@ -16,6 +18,9 @@ import (
 )
 
 func main() {
+	// Load .env file if it exists (ignores error if missing)
+	_ = godotenv.Load()
+
 	cfg := config.Default()
 
 	logger, err := observability.NewFromConfig(cfg.Log.Level, cfg.Log.Format)

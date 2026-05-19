@@ -2,6 +2,11 @@
 bpmn-ai
 bin/
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Coverage
 coverage.out
 coverage.html

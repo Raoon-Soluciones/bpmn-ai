@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -48,6 +49,11 @@ type LogConfig struct {
 
 // Default returns a configuration with sensible defaults.
 func Default() Config {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://postgres:postgres@localhost:5432/bpmn?sslmode=disable"
+	}
+
 	return Config{
 		Server: ServerConfig{
 			Host:             "0.0.0.0",
@@ -58,7 +64,7 @@ func Default() Config {
 			AllowedOrigins:   []string{"https://localhost:3000"},
 		},
 		Database: DatabaseConfig{
-			URL:         "postgres://postgres:postgres@localhost:5432/bpmn?sslmode=disable",
+			URL:         dbURL,
 			MaxConns:    25,
 			MinConns:    5,
 			MaxIdleTime: 30 * time.Minute,
