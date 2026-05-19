@@ -23,8 +23,5 @@ Thumbs.db
 # Go
 vendor/
 
-# Dependencies
-go.sum
-
 # Docker
 .dockerignore
