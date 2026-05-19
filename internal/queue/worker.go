@@ -103,50 +103,62 @@ func (wp *WorkerPool) processBatch(ctx context.Context) {
 }
 
 func (wp *WorkerPool) processJob(ctx context.Context, job *store.JobRecord) {
-	// Heap-allocate a copy so the pointer survives processJob and
-	// concurrent readers of the store's map never access a stale stack frame.
-	j := new(store.JobRecord)
-	*j = *job
-	j.Status = store.JobStatusRunning
-	now := time.Now()
-	j.ExecutedAt = &now
-	if err := wp.store.UpdateJob(ctx, j); err != nil {
-		return
-	}
-
+	// Each call to UpdateJob stores a freshly allocated copy so the
+	// pointer in the map is never mutated after insertion — concurrent
+	// readers (GetPendingJobs / GetJob) never race with a writer.
 	if wp.handler == nil {
-		wp.completeJob(ctx, j)
+		j := new(store.JobRecord)
+		*j = *job
+		j.Status = store.JobStatusCompleted
+		now := time.Now()
+		j.ExecutedAt = &now
+		_ = wp.store.UpdateJob(ctx, j)
 		return
 	}
 
-	if err := wp.handler(ctx, j); err != nil {
-		wp.failJob(ctx, j, err)
-	} else {
-		wp.completeJob(ctx, j)
-	}
-}
-
-func (wp *WorkerPool) completeJob(ctx context.Context, job *store.JobRecord) {
-	job.Status = store.JobStatusCompleted
+	// Phase 1: transition to Running with a fresh copy.
+	running := new(store.JobRecord)
+	*running = *job
+	running.Status = store.JobStatusRunning
 	now := time.Now()
-	job.ExecutedAt = &now
-	_ = wp.store.UpdateJob(ctx, job)
+	running.ExecutedAt = &now
+	if err := wp.store.UpdateJob(ctx, running); err != nil {
+		return
+	}
+
+	if err := wp.handler(ctx, running); err != nil {
+		wp.failJob(ctx, running, err)
+		return
+	}
+
+	// Phase 2: transition to Completed with a fresh copy.
+	completed := new(store.JobRecord)
+	*completed = *running
+	completed.Status = store.JobStatusCompleted
+	now = time.Now()
+	completed.ExecutedAt = &now
+	_ = wp.store.UpdateJob(ctx, completed)
 }
 
 func (wp *WorkerPool) failJob(ctx context.Context, job *store.JobRecord, err error) {
-	if wp.retry.ShouldRetry(job) {
-		wp.retry.ApplyRetry(job, err.Error())
-		_ = wp.store.UpdateJob(ctx, job)
+	j := new(store.JobRecord)
+	*j = *job
+	j.ErrorMessage = err.Error()
+
+	if wp.retry.ShouldRetry(j) {
+		wp.retry.ApplyRetry(j, err.Error())
+		_ = wp.store.UpdateJob(ctx, j)
 		return
 	}
 
 	if wp.dlq != nil {
-		_ = wp.dlq.Add(ctx, job, err.Error())
-	} else {
-		job.Status = store.JobStatusDead
-		job.ErrorMessage = err.Error()
-		_ = wp.store.UpdateJob(ctx, job)
+		j.Status = store.JobStatusDead
+		_ = wp.dlq.Add(ctx, j, err.Error())
+		return
 	}
+
+	j.Status = store.JobStatusDead
+	_ = wp.store.UpdateJob(ctx, j)
 }
 
 // Enqueue creates a new job and adds it to the queue.
