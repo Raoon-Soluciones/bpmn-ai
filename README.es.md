@@ -324,7 +324,19 @@ engine:
 log:
   level: info
   format: json
+
+audit:
+  enabled: true
+  file_path: ./data/audit.jsonl
 ```
+
+### Variables de Entorno
+
+| Variable | Valor por Defecto | Descripción |
+|----------|-------------------|-------------|
+| `DATABASE_URL` | `postgres://...` | Cadena de conexión PostgreSQL |
+| `AUDIT_LOG_ENABLED` | `true` | Activar/desactivar el registro de auditoría |
+| `AUDIT_LOG_FILE_PATH` | `./data/audit.jsonl` | Ruta del archivo de auditoría JSON Lines |
 
 ---
 
@@ -395,6 +407,53 @@ El motor emite eventos de dominio para observabilidad:
 | `job.dead` | Trabajo movido a cola de muertos |
 
 Los eventos pueden ser consumidos sincrónica o asincrónicamente vía el `Dispatcher`.
+
+### Registro de Auditoría
+
+El motor también escribe un registro de auditoría estructurado en un archivo JSON Lines (`.jsonl`). Cada evento emitido por el dispatcher se registra como una línea JSON independiente, capturando el contexto completo de ejecución:
+
+| Campo | Descripción |
+|-------|-------------|
+| `id` | Identificador único de la entrada |
+| `instance_id` | ID de la instancia del proceso |
+| `process_id` | ID de la definición del proceso |
+| `element_id` | ID del elemento (si aplica) |
+| `element_type` | Tipo de elemento (ej. `startEvent`, `exclusiveGateway`) |
+| `action` | Acción de ejecución (ej. `ROUTE`, `WAIT`, `ERROR`) |
+| `event_type` | Tipo de evento (ej. `element.executed`, `process.completed`) |
+| `timestamp` | Marca de tiempo ISO 8601 |
+| `thread_id` | ID del hilo de ejecución |
+| `parent_index` | Índice del hilo padre (ramas paralelas) |
+| `from_state` | Estado anterior de la instancia |
+| `to_state` | Nuevo estado de la instancia |
+| `error_message` | Detalles del error (si aplica) |
+| `payload` | Contexto adicional (variables, decisiones de compuertas, etc.) |
+
+**Configuración vía archivo `.env`:**
+
+```bash
+# .env
+AUDIT_LOG_ENABLED=true
+AUDIT_LOG_FILE_PATH=./data/audit.jsonl
+```
+
+**Inspeccionar el registro de auditoría:**
+
+```bash
+# Tail en vivo
+tail -f ./data/audit.jsonl
+
+# Filtrar por tipo de evento
+jq 'select(.event_type=="element.executed")' ./data/audit.jsonl
+
+# Filtrar por tipo de elemento
+jq 'select(.element_type=="exclusiveGateway")' ./data/audit.jsonl
+
+# Extraer todos los IDs de instancia
+jq -r '.instance_id' ./data/audit.jsonl | sort -u
+```
+
+El registro de auditoría es aditivo — el `ExecutionLogEntry` existente se conserva. Cuando la auditoría está desactivada (`AUDIT_LOG_ENABLED=false`), los eventos aún se distribuyen pero no se escriben entradas en el archivo.
 
 ---
 
@@ -674,7 +733,7 @@ func main() {
     registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
     registry.Register(bpmn.ElementTypeExclusiveGateway, gateways.NewExclusiveGateway)
 
-    // 3. Crear store, queue, y logger
+    // 3. Crear store, queue, logger y auditoría
     store := memory.NewStore()
     logger, _ := observability.NewFromConfig("info", "json")
     retry := queue.DefaultRetryPolicy()
@@ -684,12 +743,18 @@ func main() {
         PollInterval: 5 * time.Second,
     })
 
-    // 4. Crear motor
+    dispatcher := observability.NewDispatcher()
+    writer, _ := observability.NewFileAuditWriter("./data/audit.jsonl", true, logger)
+    defer writer.Close()
+    observability.NewAuditor(dispatcher, writer)
+    q.WithDispatcher(dispatcher)
+
+    // 4. Crear motor con auditoría
     eng := engine.New(engine.Config{
         WorkerCount:      4,
         MaxLoops:         100,
         ExecutionTimeout: 30 * time.Second,
-    }, registry, store, logger, q)
+    }, registry, store, logger, q).WithDispatcher(dispatcher)
 
     // 5. Crear y ejecutar instancia
     instance := process.NewInstance(proc, map[string]any{

@@ -332,7 +332,19 @@ engine:
 log:
   level: info
   format: json
+
+audit:
+  enabled: true
+  file_path: ./data/audit.jsonl
 ```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `postgres://...` | PostgreSQL connection string |
+| `AUDIT_LOG_ENABLED` | `true` | Enable/disable audit logging |
+| `AUDIT_LOG_FILE_PATH` | `./data/audit.jsonl` | Path to audit log JSON Lines file |
 
 ---
 
@@ -403,6 +415,53 @@ The engine emits domain events for observability:
 | `job.dead` | Job moved to dead letter |
 
 Events can be consumed synchronously or asynchronously via the `Dispatcher`.
+
+### Audit Log
+
+The engine also writes a structured audit log to a JSON Lines (`.jsonl`) file. Every event emitted by the dispatcher is recorded as a single JSON line, capturing the full execution context:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique entry identifier |
+| `instance_id` | Process instance ID |
+| `process_id` | Process definition ID |
+| `element_id` | Element ID (if applicable) |
+| `element_type` | Element type (e.g. `startEvent`, `exclusiveGateway`) |
+| `action` | Execution action (e.g. `ROUTE`, `WAIT`, `ERROR`) |
+| `event_type` | Event type (e.g. `element.executed`, `process.completed`) |
+| `timestamp` | ISO 8601 timestamp |
+| `thread_id` | Execution thread ID |
+| `parent_index` | Parent thread index (parallel branches) |
+| `from_state` | Previous instance state |
+| `to_state` | New instance state |
+| `error_message` | Error details (if applicable) |
+| `payload` | Additional context (variables, gateway decisions, etc.) |
+
+**Configuration via `.env` file:**
+
+```bash
+# .env
+AUDIT_LOG_ENABLED=true
+AUDIT_LOG_FILE_PATH=./data/audit.jsonl
+```
+
+**Inspecting the audit log:**
+
+```bash
+# Tail live
+tail -f ./data/audit.jsonl
+
+# Filter by event type
+jq 'select(.event_type=="element.executed")' ./data/audit.jsonl
+
+# Filter by element type
+jq 'select(.element_type=="exclusiveGateway")' ./data/audit.jsonl
+
+# Extract all instance IDs
+jq -r '.instance_id' ./data/audit.jsonl | sort -u
+```
+
+The audit log is additive — the existing `ExecutionLogEntry` is preserved. When audit is disabled (`AUDIT_LOG_ENABLED=false`), events are still dispatched but no entries are written to the file.
 
 ---
 
@@ -683,7 +742,7 @@ func main() {
     registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
     registry.Register(bpmn.ElementTypeExclusiveGateway, gateways.NewExclusiveGateway)
 
-    // 3. Create store, queue, and logger
+    // 3. Create store, queue, logger, and audit
     store := memory.NewStore()
     logger, _ := observability.NewFromConfig("info", "json")
     retry := queue.DefaultRetryPolicy()
@@ -693,12 +752,18 @@ func main() {
         PollInterval: 5 * time.Second,
     })
 
-    // 4. Create engine
+    dispatcher := observability.NewDispatcher()
+    writer, _ := observability.NewFileAuditWriter("./data/audit.jsonl", true, logger)
+    defer writer.Close()
+    observability.NewAuditor(dispatcher, writer)
+    q.WithDispatcher(dispatcher)
+
+    // 4. Create engine with audit
     eng := engine.New(engine.Config{
         WorkerCount:      4,
         MaxLoops:         100,
         ExecutionTimeout: 30 * time.Second,
-    }, registry, store, logger, q)
+    }, registry, store, logger, q).WithDispatcher(dispatcher)
 
     // 5. Create and run instance
     instance := process.NewInstance(proc, map[string]any{
