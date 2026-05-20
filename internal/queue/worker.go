@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
@@ -22,6 +23,7 @@ type WorkerPool struct {
 	pollInterval time.Duration
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+	dispatcher *observability.Dispatcher
 }
 
 // WorkerPoolConfig holds worker pool configuration.
@@ -138,6 +140,18 @@ func (wp *WorkerPool) processJob(ctx context.Context, job *store.JobRecord) {
 	now = time.Now()
 	completed.ExecutedAt = &now
 	_ = wp.store.UpdateJob(ctx, completed)
+
+	if wp.dispatcher != nil {
+		wp.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventJobCompleted,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": completed.InstanceID,
+				"job_id":      completed.ID,
+				"job_type":    completed.Type,
+			},
+		})
+	}
 }
 
 func (wp *WorkerPool) failJob(ctx context.Context, job *store.JobRecord, err error) {
@@ -148,6 +162,20 @@ func (wp *WorkerPool) failJob(ctx context.Context, job *store.JobRecord, err err
 	if wp.retry.ShouldRetry(j) {
 		wp.retry.ApplyRetry(j, err.Error())
 		_ = wp.store.UpdateJob(ctx, j)
+
+		if wp.dispatcher != nil {
+			wp.dispatcher.DispatchAsync(observability.Event{
+				Type:      observability.EventJobFailed,
+				Timestamp: time.Now(),
+				Payload: map[string]any{
+					"instance_id":  j.InstanceID,
+					"job_id":       j.ID,
+					"job_type":     j.Type,
+					"error":        err.Error(),
+					"retry_count":  j.RetryCount,
+				},
+			})
+		}
 		return
 	}
 
@@ -159,6 +187,12 @@ func (wp *WorkerPool) failJob(ctx context.Context, job *store.JobRecord, err err
 
 	j.Status = store.JobStatusDead
 	_ = wp.store.UpdateJob(ctx, j)
+}
+
+// WithDispatcher sets the event dispatcher for the worker pool.
+func (wp *WorkerPool) WithDispatcher(d *observability.Dispatcher) *WorkerPool {
+	wp.dispatcher = d
+	return wp
 }
 
 // Enqueue creates a new job and adds it to the queue.

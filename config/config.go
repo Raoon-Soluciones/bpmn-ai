@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type Config struct {
 	Database    DatabaseConfig
 	Engine      EngineConfig
 	Log         LogConfig
+	Audit       AuditConfig
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -47,6 +49,12 @@ type LogConfig struct {
 	Format string // json, text
 }
 
+// AuditConfig holds audit log configuration.
+type AuditConfig struct {
+	Enabled  bool
+	FilePath string
+}
+
 // Default returns a configuration with sensible defaults.
 func Default() Config {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -80,7 +88,31 @@ func Default() Config {
 			Level:  "info",
 			Format: "json",
 		},
+		Audit: AuditConfig{
+			Enabled:  parseBoolEnv("AUDIT_LOG_ENABLED", true),
+			FilePath: envOrDefault("AUDIT_LOG_FILE_PATH", "./data/audit.jsonl"),
+		},
 	}
+}
+
+func parseBoolEnv(key string, defaultVal bool) bool {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		return defaultVal
+	}
+	return b
+}
+
+func envOrDefault(key, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
 }
 
 // Validate checks the configuration for errors.
@@ -96,6 +128,9 @@ func (c Config) Validate() error {
 	}
 	if c.Engine.ExecutionTimeout < 1*time.Second {
 		return fmt.Errorf("engine execution timeout must be at least 1 second")
+	}
+	if c.Audit.Enabled && c.Audit.FilePath == "" {
+		return fmt.Errorf("audit log file path must not be empty when audit is enabled")
 	}
 	return nil
 }

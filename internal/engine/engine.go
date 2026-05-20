@@ -25,12 +25,13 @@ type Config struct {
 
 // Engine is the BPMN execution engine with an iterative loop.
 type Engine struct {
-	config   Config
-	registry *ElementRegistry
-	router   *FlowRouter
-	store    store.Store
-	logger   *observability.Logger
-	queue    *queue.WorkerPool
+	config     Config
+	registry   *ElementRegistry
+	router     *FlowRouter
+	store      store.Store
+	logger     *observability.Logger
+	queue      *queue.WorkerPool
+	dispatcher *observability.Dispatcher
 }
 
 // New creates a new engine.
@@ -46,13 +47,20 @@ func New(cfg Config, registry *ElementRegistry, s store.Store, logger *observabi
 	}
 
 	return &Engine{
-		config:   cfg,
-		registry: registry,
-		router:   NewFlowRouter(),
-		store:    s,
-		logger:   logger,
-		queue:    q,
+		config:     cfg,
+		registry:   registry,
+		router:     NewFlowRouter(),
+		store:      s,
+		logger:     logger,
+		queue:      q,
+		dispatcher: observability.NewDispatcher(),
 	}
+}
+
+// WithDispatcher sets the event dispatcher for the engine.
+func (e *Engine) WithDispatcher(d *observability.Dispatcher) *Engine {
+	e.dispatcher = d
+	return e
 }
 
 // workItem represents a unit of work for the engine.
@@ -124,6 +132,22 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 
 	// Enqueue initial flow
 	workCh <- workItem{flow: initialFlow, threadID: 1}
+
+	// Emit process started event
+	e.dispatcher.DispatchAsync(observability.Event{
+		Type:      observability.EventProcessStarted,
+		Timestamp: time.Now(),
+		Payload: map[string]any{
+			"instance_id": instance.ID,
+			"process_id":  instance.ProcessID,
+			"element_id":  instance.Process.StartEventID,
+			"element_type": string(bpmn.ElementTypeStartEvent),
+			"action":      string(ActionRoute),
+			"thread_id":   1,
+			"from_state":  string(process.StateCreated),
+			"to_state":    string(process.StateInProgress),
+		},
+	})
 
 	// Process results
 	for {
@@ -248,7 +272,46 @@ func (e *Engine) executeElement(ctx context.Context, instance *process.Instance,
 		result.FlowData.DurationMs = &d
 	}
 
+	// Emit element executed event
+	payload := map[string]any{
+		"instance_id":  instance.ID,
+		"process_id":   instance.ProcessID,
+		"element_id":   flow.ElementID,
+		"element_type": string(flow.ElementType),
+		"action":       string(result.Action),
+		"thread_id":    threadID,
+		"duration_ms":  result.DurationMs,
+	}
+
+	if len(result.FlowFilters) > 0 {
+		payload["flow_filters"] = result.FlowFilters
+	}
+
+	payload["variables"] = cloneVariables(instance.Variables)
+
+	eventType := observability.EventElementExecuted
+	if result.Action == ActionError {
+		eventType = observability.EventElementError
+		if result.Error != nil {
+			payload["error"] = result.Error.Error()
+		}
+	}
+
+	e.dispatcher.DispatchAsync(observability.Event{
+		Type:      eventType,
+		Timestamp: time.Now(),
+		Payload:   payload,
+	})
+
 	return result
+}
+
+func cloneVariables(vars map[string]any) map[string]any {
+	c := make(map[string]any, len(vars))
+	for k, v := range vars {
+		c[k] = v
+	}
+	return c
 }
 
 // handleResult processes an execution result and enqueues next flows.
@@ -338,11 +401,33 @@ func (e *Engine) handleResult(
 		if err := instance.Transition(process.StateWaiting); err != nil {
 			e.logger.Error("failed to suspend instance", "error", err)
 		}
+		e.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventProcessCompleted,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": instance.ID,
+				"process_id":  instance.ProcessID,
+				"from_state":  string(process.StateInProgress),
+				"to_state":    string(process.StateWaiting),
+			},
+		})
 
 	case element.ActionError:
+		fromState := instance.State
 		if err := instance.Transition(process.StateError); err != nil {
 			e.logger.Error("failed to transition instance to error", "error", err)
 		}
+		e.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventProcessError,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": instance.ID,
+				"process_id":  instance.ProcessID,
+				"from_state":  string(fromState),
+				"to_state":    string(process.StateError),
+				"error":       result.Error.Error(),
+			},
+		})
 		if result.Error != nil {
 			errCh <- result.Error
 		}
@@ -352,12 +437,32 @@ func (e *Engine) handleResult(
 			if err := instance.Transition(process.StateCompleted); err != nil {
 				e.logger.Error("failed to complete instance", "error", err)
 			}
+			e.dispatcher.DispatchAsync(observability.Event{
+				Type:      observability.EventProcessCompleted,
+				Timestamp: time.Now(),
+				Payload: map[string]any{
+					"instance_id": instance.ID,
+					"process_id":  instance.ProcessID,
+					"from_state":  string(process.StateInProgress),
+					"to_state":    string(process.StateCompleted),
+				},
+			})
 		}
 
 	case element.ActionTerminate:
 		if err := instance.Transition(process.StateTerminated); err != nil {
 			e.logger.Error("failed to terminate instance", "error", err)
 		}
+		e.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventProcessTerminated,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": instance.ID,
+				"process_id":  instance.ProcessID,
+				"from_state":  string(process.StateInProgress),
+				"to_state":    string(process.StateTerminated),
+			},
+		})
 		// Close all active threads
 		threads, err := e.store.GetThreadsByInstance(ctx, instance.ID)
 		if err == nil {
@@ -393,6 +498,17 @@ func (e *Engine) handleResult(
 			job.MaxRetries = 3
 			_ = e.store.CreateJob(ctx, job)
 		}
+		e.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventJobQueued,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": instance.ID,
+				"process_id":  instance.ProcessID,
+				"element_id":  result.FlowData.ElementID,
+				"job_id":      job.ID,
+				"job_type":    job.Type,
+			},
+		})
 		// Route to next flows immediately while queue is processed asynchronously
 		nextFlows := e.router.Route(result, instance.Process, result.FlowData.ThreadID)
 		for _, nf := range nextFlows {

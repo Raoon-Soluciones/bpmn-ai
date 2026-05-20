@@ -33,12 +33,20 @@ func main() {
 
 	store := memory.NewStore()
 
+	dispatcher := observability.NewDispatcher()
+	auditWriter, err := observability.NewFileAuditWriter(cfg.Audit.FilePath, cfg.Audit.Enabled, logger)
+	if err != nil {
+		logger.Error("failed to create audit writer", "error", err)
+		os.Exit(1)
+	}
+	_ = observability.NewAuditor(dispatcher, auditWriter)
+
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store)
+	dlq := queue.NewDeadLetterQueue(store).WithDispatcher(dispatcher)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  cfg.Engine.WorkerCount,
 		PollInterval: cfg.Engine.QueuePollInterval,
-	})
+	}).WithDispatcher(dispatcher)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -73,6 +81,10 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 		os.Exit(1)
+	}
+
+	if err := auditWriter.Close(); err != nil {
+		logger.Error("audit writer close error", "error", err)
 	}
 
 	logger.Info("server stopped")

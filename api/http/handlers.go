@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/Raoon-Soluciones/bpmn-ai/api/middleware"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -363,6 +364,18 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id": id,
 		"status":  string(flow.Status),
+	})
+}
+
+func (s *Server) getCSRFToken(w http.ResponseWriter, r *http.Request) {
+	token, err := middleware.GenerateCSRFToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+	middleware.SetCSRFCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"csrf_token": token,
 	})
 }
 

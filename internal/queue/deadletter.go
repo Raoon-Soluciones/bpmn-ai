@@ -2,18 +2,27 @@ package queue
 
 import (
 	"context"
+	"time"
 
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
 // DeadLetterQueue stores jobs that exceeded all retry attempts.
 type DeadLetterQueue struct {
-	store store.Store
+	store      store.Store
+	dispatcher *observability.Dispatcher
 }
 
 // NewDeadLetterQueue creates a new dead letter queue.
 func NewDeadLetterQueue(s store.Store) *DeadLetterQueue {
 	return &DeadLetterQueue{store: s}
+}
+
+// WithDispatcher sets the event dispatcher for the dead letter queue.
+func (dlq *DeadLetterQueue) WithDispatcher(d *observability.Dispatcher) *DeadLetterQueue {
+	dlq.dispatcher = d
+	return dlq
 }
 
 // Add moves a failed job to the dead letter queue.
@@ -31,7 +40,24 @@ func (dlq *DeadLetterQueue) Add(ctx context.Context, job *store.JobRecord, errMs
 	}
 	job.Status = store.JobStatusDead
 	job.ErrorMessage = errMsg
-	return dlq.store.UpdateJob(ctx, job)
+	if err := dlq.store.UpdateJob(ctx, job); err != nil {
+		return err
+	}
+
+	if dlq.dispatcher != nil {
+		dlq.dispatcher.DispatchAsync(observability.Event{
+			Type:      observability.EventJobDead,
+			Timestamp: time.Now(),
+			Payload: map[string]any{
+				"instance_id": job.InstanceID,
+				"job_id":      job.ID,
+				"job_type":    job.Type,
+				"error":       errMsg,
+			},
+		})
+	}
+
+	return nil
 }
 
 // List returns all dead letters for an instance.

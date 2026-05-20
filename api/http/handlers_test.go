@@ -36,6 +36,7 @@ func newTestServer(t *testing.T) *Server {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,
+		DisableCSRF:  true,
 	}, store, q, logger, metrics)
 }
 
@@ -415,6 +416,134 @@ func TestClaimTask_MissingUserID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestCSRFTokenEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/csrf-token", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	token, ok := resp["csrf_token"].(string)
+	if !ok || token == "" {
+		t.Fatal("expected non-empty csrf_token in response")
+	}
+
+	cookies := rec.Result().Cookies()
+	var csrfCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "csrf_token" {
+			csrfCookie = c
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("expected csrf_token cookie")
+	}
+	if csrfCookie.Value != token {
+		t.Errorf("cookie value %q != response token %q", csrfCookie.Value, token)
+	}
+}
+
+func TestCSRF_RejectsPostWithoutToken(t *testing.T) {
+	store := memory.NewStore()
+	logger, _ := observability.NewFromConfig("error", "text")
+	metrics := observability.NewMetrics()
+	retry := queue.DefaultRetryPolicy()
+	dlq := queue.NewDeadLetterQueue(store)
+	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
+		Concurrency:  1,
+		PollInterval: 5 * time.Second,
+	})
+	srv := NewServer(ServerConfig{
+		Host:         "127.0.0.1",
+		Port:         0,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}, store, q, logger, metrics)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCSRF_AcceptsPostWithValidToken(t *testing.T) {
+	store := memory.NewStore()
+	logger, _ := observability.NewFromConfig("error", "text")
+	metrics := observability.NewMetrics()
+	retry := queue.DefaultRetryPolicy()
+	dlq := queue.NewDeadLetterQueue(store)
+	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
+		Concurrency:  1,
+		PollInterval: 5 * time.Second,
+	})
+	srv := NewServer(ServerConfig{
+		Host:         "127.0.0.1",
+		Port:         0,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}, store, q, logger, metrics)
+
+	// First get a CSRF token
+	tokenReq := httptest.NewRequest(http.MethodGet, "/api/v1/csrf-token", nil)
+	tokenRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(tokenRec, tokenReq)
+
+	if tokenRec.Code != http.StatusOK {
+		t.Fatalf("csrf-token endpoint: expected 200, got %d", tokenRec.Code)
+	}
+
+	var tokenResp map[string]any
+	json.NewDecoder(tokenRec.Body).Decode(&tokenResp)
+	csrfToken := tokenResp["csrf_token"].(string)
+
+	cookies := tokenRec.Result().Cookies()
+	var csrfCookie string
+	for _, c := range cookies {
+		if c.Name == "csrf_token" {
+			csrfCookie = c.Value
+		}
+	}
+
+	// Now make a POST with the token
+	body := createProcessRequest{
+		Name: "CSRF Test",
+		BPMNXML: `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="123e4567-e89b-12d3-a456-426614174000" name="Test">
+    <startEvent id="start-1"/>
+    <endEvent id="end-1"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="end-1"/>
+  </process>
+</definitions>`,
+	}
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrfCookie})
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

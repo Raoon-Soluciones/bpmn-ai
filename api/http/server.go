@@ -26,6 +26,7 @@ type ServerConfig struct {
 	IdleTimeout    time.Duration
 	MaxBodySize    int64
 	AllowedOrigins []string
+	DisableCSRF    bool
 }
 
 // Server is the HTTP API server.

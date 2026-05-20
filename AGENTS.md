@@ -17,7 +17,7 @@ Standalone BPMN 2.0 execution engine written in Go. High-performance, production
 | `pkg/bpmn/` | BPMN model types & XML parser |
 | `pkg/store/` | Persistence interface + in-memory implementation (testing) |
 | `api/http/` | REST API with chi router — handlers, routes, health checks |
-| `api/middleware/` | HTTP middleware — logging, recovery, request ID |
+| `api/middleware/` | HTTP middleware — logging, recovery, request ID, rate limiter, CSRF |
 | `config/` | Configuration system |
 | `testdata/` | BPMN test files |
 
@@ -27,7 +27,7 @@ Standalone BPMN 2.0 execution engine written in Go. High-performance, production
 - **Flow router**: `internal/engine/router.go` — determines next elements, handles parallel branches with thread tracking
 - **Fail-safe**: `internal/engine/failsafe.go` — timeout + loop detection
 - **Element registry**: `internal/engine/registry.go` — factory pattern for BPMN elements
-- **HTTP API**: `api/http/server.go` — chi router with middleware chain (logging, recovery, request ID, CORS)
+- **HTTP API**: `api/http/server.go` — chi router with middleware chain (logging, recovery, request ID, CORS, CSRF, rate limiter)
 - **Job queue**: `internal/queue/worker.go` — worker pool with configurable concurrency, exponential backoff retry, dead letter queue
 
 ## Supported BPMN elements
@@ -53,7 +53,7 @@ CREATED → IN_PROGRESS → COMPLETED
 
 ## Conventions
 
-- **Go 1.23+** — use modern patterns, no external DI framework (factory functions)
+- **Go 1.26+** — use modern patterns, no external DI framework (factory functions)
 - **No ORM** — explicit queries via `pkg/store` interface (pgx for PostgreSQL, in-memory for tests)
 - **chi router** — idiomatic HTTP routing, no reflection overhead
 - **slog** — structured logging from stdlib, no external logger dependency
@@ -96,6 +96,7 @@ Engine is configured via `config/` package with YAML + environment variables. Ke
 - `engine.execution_timeout` — per-execution timeout
 - `engine.queue_poll_interval` — job queue polling frequency
 - `log.level` / `log.format` — logging configuration
+- `server.disable_csrf` — disables CSRF middleware (useful for tests / local dev)
 
 ## Gotchas
 

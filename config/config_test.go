@@ -23,6 +23,12 @@ func TestDefault(t *testing.T) {
 	if c.Log.Format != "json" {
 		t.Errorf("expected log format json, got %s", c.Log.Format)
 	}
+	if !c.Audit.Enabled {
+		t.Error("expected audit enabled by default")
+	}
+	if c.Audit.FilePath != "./data/audit.jsonl" {
+		t.Errorf("expected audit file path ./data/audit.jsonl, got %s", c.Audit.FilePath)
+	}
 }
 
 func TestValidate_OK(t *testing.T) {
@@ -66,5 +72,24 @@ func TestValidate_InvalidTimeout(t *testing.T) {
 	c.Engine.ExecutionTimeout = 500 * time.Millisecond
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for timeout < 1s")
+	}
+}
+
+func TestValidate_EmptyAuditPath(t *testing.T) {
+	c := Default()
+	c.Audit.Enabled = true
+	c.Audit.FilePath = ""
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for empty audit path when enabled")
+	}
+}
+
+func TestAuditDefaults(t *testing.T) {
+	c := Default()
+	if c.Audit.Enabled != true {
+		t.Error("expected audit enabled by default")
+	}
+	if c.Audit.FilePath == "" {
+		t.Error("expected non-empty audit file path")
 	}
 }

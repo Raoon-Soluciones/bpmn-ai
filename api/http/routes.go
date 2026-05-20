@@ -2,6 +2,7 @@ package http
 
 import (
 	"github.com/go-chi/chi/v5"
+	"github.com/Raoon-Soluciones/bpmn-ai/api/middleware"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 )
 
@@ -16,6 +17,11 @@ func (s *Server) routes() {
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
+		if !s.config.DisableCSRF {
+			r.Use(middleware.CSRF)
+		}
+
+		r.Get("/csrf-token", s.getCSRFToken)
 		r.Post("/processes", s.createProcess)
 		r.Get("/processes", s.listProcesses)
 		r.Get("/processes/{id}", s.getProcess)

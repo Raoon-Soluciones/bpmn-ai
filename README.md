@@ -71,18 +71,23 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 - Scheduled job support
 
 ### Phase 5: API & Observability ✅
-- REST API with chi router (13 endpoints)
-- Middleware chain: logging, recovery, request ID, CORS
+- REST API with chi router (14 endpoints)
+- Middleware chain: logging, recovery, request ID, CORS, CSRF, rate limiter
 - Prometheus metrics (10 metrics)
 - Event dispatcher (12 event types, sync/async)
-- Health check + readiness endpoints
+- Health check (version info) + readiness (store connectivity)
 
 ### Phase 6: Production Ready ✅
 - Docker multi-stage build (~15MB final image)
 - docker-compose with PostgreSQL 16
 - GitHub Actions CI (test, build, docker)
-- 98 tests, all passing with `-race` detector
-- Comprehensive README
+- CSRF protection (double-submit cookie pattern)
+- Per-IP rate limiter (token bucket)
+- XXE-safe XML parser
+- BPMN condition expression evaluation (govaluate)
+- Converging ParallelGateway (waits for all incoming branches)
+- Race-detector clean throughout
+- 110+ tests, all passing
 
 ---
 
@@ -281,6 +286,7 @@ PENDING ──→ RUNNING ──→ COMPLETED
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/v1/csrf-token` | Get CSRF token (sets cookie, returns token) |
 | GET | `/api/v1/cases` | List cases |
 | GET | `/api/v1/cases/{id}` | Case details |
 | GET | `/api/v1/cases/{id}/tasks` | Pending tasks |
@@ -296,6 +302,8 @@ All requests include:
 - **Structured logging** — method, path, status, duration, request ID
 - **Panic recovery** — 500 on panic with error logging
 - **CORS** — configurable allowed origins
+- **Rate Limiter** — per-IP token bucket (configurable rate/burst)
+- **CSRF Protection** — double-submit cookie pattern on state-changing methods (`POST`/`PUT`/`DELETE`/`PATCH`); safe methods (`GET`/`HEAD`/`OPTIONS`/`TRACE`) pass through; disabled via `DisableCSRF: true` in tests
 
 ---
 
@@ -450,7 +458,8 @@ bpmn-ai/
 │   └── middleware/                # HTTP middleware
 │       ├── logging.go             # Request logging
 │       ├── recovery.go            # Panic recovery
-│       └── requestid.go           # Request ID
+│       ├── requestid.go           # Request ID + rate limiter
+│       └── csrf.go                # CSRF protection
 ├── config/                        # Configuration
 ├── testdata/                      # BPMN test files
 │   ├── simple_sequence.bpmn
@@ -576,7 +585,7 @@ CREATE INDEX idx_exec_log_instance ON execution_log(instance_id);
 
 ### Prerequisites
 
-- Go 1.23+
+- Go 1.26+
 - PostgreSQL 16+ (for production)
 - Docker + Docker Compose (for testing)
 
@@ -636,7 +645,7 @@ api/http                          70.6%
 pkg/store/memory                  57.2%
 ```
 
-**98 tests total**, all passing with `-race` detector.
+**110+ tests total**, all passing with `-race` detector.
 
 ---
 
@@ -731,7 +740,8 @@ func main() {
 | **Testing** | testify | `github.com/stretchr/testify` | Assertions only |
 | **Docker Tests** | dockertest | `github.com/ory/dockertest/v3` | Integration test containers |
 | **PNG Gen** | gg | `github.com/fogleman/gg` | 2D drawing for process diagrams |
-| **Rate Limit** | tollbooth | `github.com/didip/tollbooth/v7` | API rate limiting |
+| **Expressions** | govaluate | `github.com/Knetic/govaluate` | BPMN condition evaluation in gateways |
+| **Rate Limit** | x/time/rate | `golang.org/x/time/rate` | Per-IP token bucket (stdlib-adjacent) |
 
 ### Not Used
 
@@ -749,7 +759,7 @@ func main() {
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Language | Go 1.23+ | Concurrency, performance, single binary |
+| Language | Go 1.26+ | Concurrency, performance, single binary |
 | No ORM | pgx + sqlx | Explicit queries, no N+1 surprises |
 | No DI framework | Factory functions | Go prefers explicit composition |
 | Router | chi | Idiomatic, no reflection overhead |
