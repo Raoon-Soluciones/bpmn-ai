@@ -10,13 +10,14 @@ import (
 
 // DeadLetterQueue stores jobs that exceeded all retry attempts.
 type DeadLetterQueue struct {
-	store      store.Store
+	store      DeadLetterStore
+	jobs       JobStore
 	dispatcher *observability.Dispatcher
 }
 
 // NewDeadLetterQueue creates a new dead letter queue.
-func NewDeadLetterQueue(s store.Store) *DeadLetterQueue {
-	return &DeadLetterQueue{store: s}
+func NewDeadLetterQueue(dl DeadLetterStore, j JobStore) *DeadLetterQueue {
+	return &DeadLetterQueue{store: dl, jobs: j}
 }
 
 // WithDispatcher sets the event dispatcher for the dead letter queue.
@@ -40,7 +41,7 @@ func (dlq *DeadLetterQueue) Add(ctx context.Context, job *store.JobRecord, errMs
 	}
 	job.Status = store.JobStatusDead
 	job.ErrorMessage = errMsg
-	if err := dlq.store.UpdateJob(ctx, job); err != nil {
+	if err := dlq.jobs.UpdateJob(ctx, job); err != nil {
 		return err
 	}
 

@@ -4,6 +4,9 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"regexp"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,6 +65,10 @@ type Instance struct {
 	StartedAt  time.Time
 	UpdatedAt  time.Time
 	FinishedAt *time.Time
+
+	completed   sync.Once
+	completedOk bool
+	threadSeq   atomic.Int64
 }
 
 // NewInstance creates a new process instance from a BPMN process definition.
@@ -71,7 +78,7 @@ func NewInstance(proc *bpmn.Process, variables map[string]any) *Instance {
 		variables = make(map[string]any)
 	}
 	sanitized := sanitizeVariables(variables, 0)
-	return &Instance{
+	inst := &Instance{
 		ID:        uuid.New().String(),
 		ProcessID: proc.ID,
 		Process:   proc,
@@ -82,6 +89,8 @@ func NewInstance(proc *bpmn.Process, variables map[string]any) *Instance {
 		StartedAt: now,
 		UpdatedAt: now,
 	}
+	inst.threadSeq.Store(1)
+	return inst
 }
 
 // GetID returns the instance ID.
@@ -109,6 +118,22 @@ func (i *Instance) Transition(next State) error {
 		i.FinishedAt = &now
 	}
 	return nil
+}
+
+// TryComplete transitions to COMPLETED exactly once, returning true on success.
+func (i *Instance) TryComplete() bool {
+	i.completed.Do(func() {
+		if err := i.Transition(StateCompleted); err != nil {
+			return
+		}
+		i.completedOk = true
+	})
+	return i.completedOk
+}
+
+// NextThreadID returns the next available thread ID and increments the counter.
+func (i *Instance) NextThreadID() int {
+	return int(i.threadSeq.Add(1))
 }
 
 // GetVariable returns a process variable by key.
@@ -171,22 +196,38 @@ func (e *InvalidTransitionError) Error() string {
 	return "invalid state transition: " + string(e.From) + " -> " + string(e.To)
 }
 
+var validVarName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 func sanitizeVariables(vars map[string]any, depth int) map[string]any {
 	if depth > 3 {
 		return make(map[string]any)
 	}
 	sanitized := make(map[string]any, len(vars))
+	var totalSize int
 	for k, v := range vars {
-		switch val := v.(type) {
-		case string, bool, int, int64, float64, nil:
-			sanitized[k] = val
-		case []any:
-			sanitized[k] = sanitizeSlice(val, depth+1)
-		case map[string]any:
-			sanitized[k] = sanitizeVariables(val, depth+1)
-		default:
-			sanitized[k] = fmt.Sprintf("%v", v)
+		if !validVarName.MatchString(k) {
+			continue
 		}
+		totalSize += len(k)
+		var val any
+		switch vt := v.(type) {
+		case string, bool, int, int64, float64, nil:
+			val = vt
+			if s, ok := vt.(string); ok {
+				totalSize += len(s)
+			}
+		case []any:
+			val = sanitizeSlice(vt, depth+1)
+		case map[string]any:
+			val = sanitizeVariables(vt, depth+1)
+		default:
+			val = fmt.Sprintf("%v", v)
+			totalSize += len(fmt.Sprintf("%v", v))
+		}
+		if totalSize > 1<<20 {
+			break
+		}
+		sanitized[k] = val
 	}
 	return sanitized
 }

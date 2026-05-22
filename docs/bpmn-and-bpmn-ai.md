@@ -280,9 +280,29 @@ Job states: `PENDING → RUNNING → COMPLETED`, with retries `FAILED → PENDIN
 
 RetryPolicy: `delay = BaseDelay × 2^retryCount` (capped at MaxDelay) + jitter ±25%. Default: 3 retries, base 1s, max 5m.
 
-### 2.9 Persistence (Store)
+### 2.9 Persistence (Store) — Interface Segregation
 
-Interface `pkg/store/store.go` with 26 methods for processes, instances, flows, threads, jobs, dead letters, and execution log.
+Instead of a single monolithic interface, each component defines its own narrow storage interface following the **Interface Segregation Principle (ISP)**:
+
+| Interface | Package | Methods | Consumer |
+|-----------|---------|---------|----------|
+| `EngineStore` | `internal/engine/store.go` | 10 (process, instance, flow, thread, job, log) | Engine core (`internal/engine/`) |
+| `ElementStore` | `internal/element/store.go` | 1 (GetFlowsByInstance) | BPMN elements via ExecutionContext |
+| `JobStore` | `internal/queue/store.go` | 4 (create, update, get, list pending) | WorkerPool, DeadLetterQueue |
+| `DeadLetterStore` | `internal/queue/store.go` | 4 (create, get by instance, get by ID, list) | DeadLetterQueue |
+
+The full `store.Store` (26 methods) union interface is retained for the API layer, which needs the widest access. The in-memory and PostgreSQL stores satisfy all narrow interfaces implicitly via Go's duck typing — no adapter code required.
+
+```
+API Layer ──→ store.Store (26 methods)
+Engine   ──→ EngineStore (10 methods)
+Elements ──→ ElementStore (1 method)
+Queue    ──→ JobStore + DeadLetterStore (4+4 methods)
+                │
+                ▼
+         In-Memory / PostgreSQL
+         (implicitly satisfy all 4 + API)
+```
 
 - **In-Memory** (`pkg/store/memory/`): for testing and local development
 - **PostgreSQL** (`pkg/store/sql/`): architecture defined with 7 tables (processes, instances, flows, threads, jobs, dead_letters, execution_log), documented migrations

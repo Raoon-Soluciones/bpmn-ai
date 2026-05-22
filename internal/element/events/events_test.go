@@ -12,7 +12,7 @@ import (
 type mockExecutionContext struct {
 	flow       *store.FlowRecord
 	instance   element.Instance
-	stored     store.Store
+	stored     element.ElementStore
 	variables  map[string]any
 }
 
@@ -36,7 +36,7 @@ func (m *mockExecutionContext) SetVariable(key string, value any) {
 	m.variables[key] = value
 }
 
-func (m *mockExecutionContext) Store() store.Store {
+func (m *mockExecutionContext) Store() element.ElementStore {
 	return m.stored
 }
 

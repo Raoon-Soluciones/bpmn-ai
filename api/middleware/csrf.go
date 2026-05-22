@@ -6,6 +6,10 @@ import (
 	"net/http"
 )
 
+// CSRFSecure controls whether the CSRF cookie has the Secure flag set.
+// Set to true in production when using HTTPS.
+var CSRFSecure bool
+
 func CSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead ||
@@ -44,6 +48,7 @@ func SetCSRFCookie(w http.ResponseWriter, token string) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
+		Secure:   CSRFSecure,
 		SameSite: http.SameSiteStrictMode,
 	})
 }

@@ -12,6 +12,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/api/middleware"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -27,6 +28,8 @@ type ServerConfig struct {
 	MaxBodySize    int64
 	AllowedOrigins []string
 	DisableCSRF    bool
+	TLSCertFile    string // path to TLS certificate (empty = no TLS)
+	TLSKeyFile     string // path to TLS private key (empty = no TLS)
 }
 
 // Server is the HTTP API server.
@@ -34,6 +37,7 @@ type Server struct {
 	config  ServerConfig
 	router  *chi.Mux
 	store   store.Store
+	engine  engine.Engine
 	queue   *queue.WorkerPool
 	logger  *observability.Logger
 	metrics *observability.Metrics
@@ -41,7 +45,7 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP server.
-func NewServer(cfg ServerConfig, s store.Store, q *queue.WorkerPool, logger *observability.Logger, metrics *observability.Metrics) *Server {
+func NewServer(cfg ServerConfig, s store.Store, eng engine.Engine, q *queue.WorkerPool, logger *observability.Logger, metrics *observability.Metrics) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RealIP)
@@ -60,10 +64,21 @@ func NewServer(cfg ServerConfig, s store.Store, q *queue.WorkerPool, logger *obs
 	limiter := middleware.NewIPRateLimiter(rate.Every(time.Second/10), 20)
 	r.Use(middleware.RateLimiter(limiter))
 
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			limiter.Cleanup()
+		}
+	}()
+
+	middleware.CSRFSecure = cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
+
 	srv := &Server{
 		config:  cfg,
 		router:  r,
 		store:   s,
+		engine:  eng,
 		queue:   q,
 		logger:  logger,
 		metrics: metrics,
@@ -92,6 +107,9 @@ func (s *Server) Start() error {
 	}
 
 	s.logger.Info("http server starting", "addr", addr)
+	if s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		return s.srv.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile)
+	}
 	return s.srv.ListenAndServe()
 }
 

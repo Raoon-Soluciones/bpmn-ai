@@ -16,6 +16,9 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
+// Compile-time check that *engine implements Engine.
+var _ Engine = (*engine)(nil)
+
 // Config holds engine configuration.
 type Config struct {
 	WorkerCount      int
@@ -23,19 +26,34 @@ type Config struct {
 	ExecutionTimeout time.Duration
 }
 
-// Engine is the BPMN execution engine with an iterative loop.
-type Engine struct {
+// Engine defines the public API for the BPMN execution engine.
+type Engine interface {
+	// Run executes a process instance from its start event.
+	Run(ctx context.Context, instance *process.Instance) error
+
+	// Continue resumes execution after a task is completed.
+	Continue(ctx context.Context, instanceID string, completedFlowID string, variables map[string]any) error
+
+	// Registry returns the element registry.
+	Registry() *ElementRegistry
+
+	// WithDispatcher sets the event dispatcher.
+	WithDispatcher(d *observability.Dispatcher) Engine
+}
+
+// engine is the BPMN execution engine with an iterative loop.
+type engine struct {
 	config     Config
 	registry   *ElementRegistry
 	router     *FlowRouter
-	store      store.Store
+	store      EngineStore
 	logger     *observability.Logger
 	queue      *queue.WorkerPool
 	dispatcher *observability.Dispatcher
 }
 
 // New creates a new engine.
-func New(cfg Config, registry *ElementRegistry, s store.Store, logger *observability.Logger, q *queue.WorkerPool) *Engine {
+func New(cfg Config, registry *ElementRegistry, s EngineStore, logger *observability.Logger, q *queue.WorkerPool) Engine {
 	if cfg.WorkerCount < 1 {
 		cfg.WorkerCount = 1
 	}
@@ -46,7 +64,7 @@ func New(cfg Config, registry *ElementRegistry, s store.Store, logger *observabi
 		cfg.ExecutionTimeout = 30 * time.Second
 	}
 
-	return &Engine{
+	return &engine{
 		config:     cfg,
 		registry:   registry,
 		router:     NewFlowRouter(),
@@ -58,12 +76,12 @@ func New(cfg Config, registry *ElementRegistry, s store.Store, logger *observabi
 }
 
 // Registry returns the element registry.
-func (e *Engine) Registry() *ElementRegistry {
+func (e *engine) Registry() *ElementRegistry {
 	return e.registry
 }
 
 // WithDispatcher sets the event dispatcher for the engine.
-func (e *Engine) WithDispatcher(d *observability.Dispatcher) *Engine {
+func (e *engine) WithDispatcher(d *observability.Dispatcher) Engine {
 	e.dispatcher = d
 	return e
 }
@@ -75,19 +93,17 @@ type workItem struct {
 }
 
 // Run executes a process instance from its start event.
-func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
+func (e *engine) Run(ctx context.Context, instance *process.Instance) error {
 	if instance.Process.StartEventID == "" {
 		return fmt.Errorf("process %s has no start event", instance.ProcessID)
 	}
 
-	// Transition to IN_PROGRESS if not already
 	if instance.State != process.StateInProgress {
 		if err := instance.Transition(process.StateInProgress); err != nil {
 			return fmt.Errorf("transition to in_progress: %w", err)
 		}
 	}
 
-	// Create initial flow record
 	initialFlow := &store.FlowRecord{
 		InstanceID:  instance.ID,
 		ElementID:   instance.Process.StartEventID,
@@ -99,7 +115,6 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 		return fmt.Errorf("create initial flow: %w", err)
 	}
 
-	// Create initial thread
 	thread := process.NewThread(instance.ID, 1, nil, initialFlow.ID)
 	threadRec := &store.ThreadRecord{
 		InstanceID:  thread.InstanceID,
@@ -112,33 +127,6 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 		return fmt.Errorf("create thread: %w", err)
 	}
 
-	// Create execution context with timeout
-	execCtx, cancel := context.WithTimeout(ctx, e.config.ExecutionTimeout)
-	defer cancel()
-
-	// Initialize fail-safe manager
-	failsafe := NewFailSafeManager(e.config.ExecutionTimeout, e.config.MaxLoops)
-
-	// Work queue
-	workCh := make(chan workItem, 1024)
-	resultCh := make(chan ExecutionResult, 1024)
-	errCh := make(chan error, 1)
-
-	// Track active work to know when to stop
-	var pendingMu sync.Mutex
-	var pending int = 1 // initial flow
-
-	// Start workers
-	var wg sync.WaitGroup
-	for i := 0; i < e.config.WorkerCount; i++ {
-		wg.Add(1)
-		go e.worker(execCtx, instance, workCh, resultCh, &wg)
-	}
-
-	// Enqueue initial flow
-	workCh <- workItem{flow: initialFlow, threadID: 1}
-
-	// Emit process started event
 	e.dispatcher.DispatchAsync(observability.Event{
 		Type:      observability.EventProcessStarted,
 		Timestamp: time.Now(),
@@ -155,13 +143,98 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 		},
 	})
 
-	// Process results
+	return e.runLoop(ctx, instance, []workItem{{flow: initialFlow, threadID: 1}})
+}
+
+// Continue resumes execution of a process instance after a task is completed.
+func (e *engine) Continue(ctx context.Context, instanceID string, completedFlowID string, variables map[string]any) error {
+	instRec, err := e.store.GetInstance(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+
+	proc, err := e.store.GetProcess(ctx, instRec.ProcessID)
+	if err != nil {
+		return fmt.Errorf("get process: %w", err)
+	}
+
+	instance := process.NewInstance(proc, instRec.Variables)
+	instance.ID = instRec.ID
+	instance.State = process.State(instRec.Status)
+	instance.Title = instRec.Title
+	instance.StartedAt = instRec.StartedAt
+	instance.UpdatedAt = instRec.UpdatedAt
+	instance.FinishedAt = instRec.FinishedAt
+
+	for k, v := range variables {
+		instance.SetVariable(k, v)
+	}
+
+	if err := instance.Transition(process.StateInProgress); err != nil {
+		return fmt.Errorf("transition to in_progress: %w", err)
+	}
+
+	flow, err := e.store.GetFlow(ctx, completedFlowID)
+	if err != nil {
+		return fmt.Errorf("get completed flow: %w", err)
+	}
+
+	result := element.ExecutionResult{
+		Action:   element.ActionRoute,
+		FlowData: flow,
+	}
+	nextFlows := e.router.Route(result, proc, flow.ThreadID)
+
+	if len(nextFlows) == 0 {
+		if isEndEvent(flow.ElementID, proc) {
+			instance.TryComplete()
+		}
+		return e.finalizeInstance(ctx, instance)
+	}
+
+	var initialItems []workItem
+	for _, nf := range nextFlows {
+		flowRec := CreateFlowRecord(instance.ID, nf.ElementID, nf.ElementType, nf.ThreadID, flow.ID)
+		if err := e.store.CreateFlow(ctx, flowRec); err != nil {
+			return fmt.Errorf("create flow: %w", err)
+		}
+		initialItems = append(initialItems, workItem{flow: flowRec, threadID: nf.ThreadID})
+	}
+
+	return e.runLoop(ctx, instance, initialItems)
+}
+
+// runLoop executes the engine worker pool and processes results.
+func (e *engine) runLoop(ctx context.Context, instance *process.Instance, initialFlows []workItem) error {
+	execCtx, cancel := context.WithTimeout(ctx, e.config.ExecutionTimeout)
+	defer cancel()
+
+	failsafe := NewFailSafeManager(e.config.ExecutionTimeout, e.config.MaxLoops)
+
+	workCh := make(chan workItem, 1024)
+	resultCh := make(chan ExecutionResult, 1024)
+	errCh := make(chan error, e.config.WorkerCount)
+
+	var pendingMu sync.Mutex
+	var pending int = len(initialFlows)
+
+	var wg sync.WaitGroup
+	for i := 0; i < e.config.WorkerCount; i++ {
+		wg.Add(1)
+		go e.worker(execCtx, instance, workCh, resultCh, &wg)
+	}
+
+	for _, item := range initialFlows {
+		workCh <- item
+	}
+
 	for {
 		select {
 		case <-execCtx.Done():
 			close(workCh)
 			wg.Wait()
 			close(resultCh)
+			e.dispatcher.Drain()
 			if execCtx.Err() == context.DeadlineExceeded {
 				instance.Transition(process.StateError)
 				return &ExecutionTimeoutError{
@@ -173,39 +246,37 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 
 		case result, ok := <-resultCh:
 			if !ok {
-				// Channel closed, all workers finished
 				wg.Wait()
+				e.dispatcher.Drain()
 				return e.finalizeInstance(ctx, instance)
 			}
 
-			// Decrement pending for completed item
 			pendingMu.Lock()
 			pending--
 			pendingMu.Unlock()
 
-			// Check fail-safes
 			if result.FlowData != nil {
 				if err := failsafe.Check(result.FlowData.ElementID); err != nil {
 					instance.Transition(process.StateError)
 					close(workCh)
 					wg.Wait()
 					close(resultCh)
+					e.dispatcher.Drain()
 					return err
 				}
 			}
 
-			// Handle result (may add more work or send error via errCh)
 			if err := e.handleResult(execCtx, instance, result, workCh, errCh, &pendingMu, &pending); err != nil {
+				e.dispatcher.Drain()
 				return err
 			}
 
-			// If error was sent via errCh, wait for it
 			if result.Action == element.ActionError {
 				err := <-errCh
+				e.dispatcher.Drain()
 				return err
 			}
 
-			// Check if all work is done after handleResult
 			pendingMu.Lock()
 			allDone := pending == 0
 			pendingMu.Unlock()
@@ -213,17 +284,19 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 				close(workCh)
 				wg.Wait()
 				close(resultCh)
+				e.dispatcher.Drain()
 				return e.finalizeInstance(ctx, instance)
 			}
 
 		case err := <-errCh:
+			e.dispatcher.Drain()
 			return err
 		}
 	}
 }
 
 // worker processes elements from the work queue.
-func (e *Engine) worker(ctx context.Context, instance *process.Instance, workCh <-chan workItem, resultCh chan<- ExecutionResult, wg *sync.WaitGroup) {
+func (e *engine) worker(ctx context.Context, instance *process.Instance, workCh <-chan workItem, resultCh chan<- ExecutionResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for item := range workCh {
@@ -238,7 +311,7 @@ func (e *Engine) worker(ctx context.Context, instance *process.Instance, workCh 
 }
 
 // executeElement executes a single BPMN element.
-func (e *Engine) executeElement(ctx context.Context, instance *process.Instance, flow *store.FlowRecord, threadID int) ExecutionResult {
+func (e *engine) executeElement(ctx context.Context, instance *process.Instance, flow *store.FlowRecord, threadID int) ExecutionResult {
 	startTime := time.Now()
 
 	// Get the BPMN element definition
@@ -295,7 +368,9 @@ func (e *Engine) executeElement(ctx context.Context, instance *process.Instance,
 		payload["flow_filters"] = result.FlowFilters
 	}
 
-	payload["variables"] = cloneVariables(instance.Variables)
+	if len(instance.Variables) > 0 {
+		payload["variables"] = cloneVariables(instance.Variables)
+	}
 
 	eventType := observability.EventElementExecuted
 	if result.Action == ActionError {
@@ -322,8 +397,34 @@ func cloneVariables(vars map[string]any) map[string]any {
 	return c
 }
 
+// enqueueFlow creates a flow record, persists it, and enqueues it for execution.
+func (e *engine) enqueueFlow(
+	ctx context.Context,
+	instanceID string,
+	next NextFlow,
+	threadID int,
+	prevFlowID string,
+	pendingMu *sync.Mutex,
+	pending *int,
+	workCh chan<- workItem,
+) error {
+	flowRecord := CreateFlowRecord(instanceID, next.ElementID, next.ElementType, threadID, prevFlowID)
+	if err := e.store.CreateFlow(ctx, flowRecord); err != nil {
+		return fmt.Errorf("create flow: %w", err)
+	}
+	pendingMu.Lock()
+	*pending++
+	pendingMu.Unlock()
+	select {
+	case workCh <- workItem{flow: flowRecord, threadID: next.ThreadID}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // handleResult processes an execution result and enqueues next flows.
-func (e *Engine) handleResult(
+func (e *engine) handleResult(
 	ctx context.Context,
 	instance *process.Instance,
 	result ExecutionResult,
@@ -337,10 +438,9 @@ func (e *Engine) handleResult(
 		nextFlows := e.router.Route(result, instance.Process, result.FlowData.ThreadID)
 
 		if len(nextFlows) > 1 {
-			parentThreadIdx := result.FlowData.ThreadID
-			for i, nf := range nextFlows {
-				threadIdx := parentThreadIdx*10 + i + 1
-				parentIdx := parentThreadIdx
+			parentIdx := result.FlowData.ThreadID
+			for _, nf := range nextFlows {
+				threadIdx := instance.NextThreadID()
 
 				thread := process.NewThread(instance.ID, threadIdx, &parentIdx, nf.FlowID)
 				threadRec := &store.ThreadRecord{
@@ -355,59 +455,25 @@ func (e *Engine) handleResult(
 					return fmt.Errorf("create thread: %w", err)
 				}
 
-				flowRecord := CreateFlowRecord(
-					instance.ID,
-					nf.ElementID,
-					nf.ElementType,
-					threadIdx,
-					result.FlowData.ID,
-				)
-				if err := e.store.CreateFlow(ctx, flowRecord); err != nil {
-					return fmt.Errorf("create flow: %w", err)
-				}
-
-				pendingMu.Lock()
-				*pending++
-				pendingMu.Unlock()
-				select {
-				case workCh <- workItem{flow: flowRecord, threadID: threadIdx}:
-				case <-ctx.Done():
-					return ctx.Err()
+				if err := e.enqueueFlow(ctx, instance.ID, nf, threadIdx, result.FlowData.ID, pendingMu, pending, workCh); err != nil {
+					return err
 				}
 			}
 		} else if len(nextFlows) == 1 {
 			nf := nextFlows[0]
-			flowRecord := CreateFlowRecord(
-				instance.ID,
-				nf.ElementID,
-				nf.ElementType,
-				result.FlowData.ThreadID,
-				result.FlowData.ID,
-			)
-			if err := e.store.CreateFlow(ctx, flowRecord); err != nil {
-				return fmt.Errorf("create flow: %w", err)
-			}
-
-			pendingMu.Lock()
-			*pending++
-			pendingMu.Unlock()
-			select {
-			case workCh <- workItem{flow: flowRecord, threadID: nf.ThreadID}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := e.enqueueFlow(ctx, instance.ID, nf, result.FlowData.ThreadID, result.FlowData.ID, pendingMu, pending, workCh); err != nil {
+				return err
 			}
 		} else {
 			// No next flows - check if this is an end event
 			if isEndEvent(result.FlowData.ElementID, instance.Process) {
-				if err := instance.Transition(process.StateCompleted); err != nil {
-					e.logger.Error("failed to transition instance", "error", err)
-				}
+				instance.TryComplete()
 			}
 		}
 
 	case element.ActionWait, element.ActionForm:
 		if err := instance.Transition(process.StateWaiting); err != nil {
-			e.logger.Error("failed to suspend instance", "error", err)
+			return fmt.Errorf("transition to waiting: %w", err)
 		}
 		e.dispatcher.DispatchAsync(observability.Event{
 			Type:      observability.EventProcessCompleted,
@@ -423,7 +489,7 @@ func (e *Engine) handleResult(
 	case element.ActionError:
 		fromState := instance.State
 		if err := instance.Transition(process.StateError); err != nil {
-			e.logger.Error("failed to transition instance to error", "error", err)
+			return fmt.Errorf("transition to error: %w", err)
 		}
 		e.dispatcher.DispatchAsync(observability.Event{
 			Type:      observability.EventProcessError,
@@ -442,24 +508,23 @@ func (e *Engine) handleResult(
 
 	case element.ActionComplete:
 		if isEndEvent(result.FlowData.ElementID, instance.Process) {
-			if err := instance.Transition(process.StateCompleted); err != nil {
-				e.logger.Error("failed to complete instance", "error", err)
+			if instance.TryComplete() {
+				e.dispatcher.DispatchAsync(observability.Event{
+					Type:      observability.EventProcessCompleted,
+					Timestamp: time.Now(),
+					Payload: map[string]any{
+						"instance_id": instance.ID,
+						"process_id":  instance.ProcessID,
+						"from_state":  string(process.StateInProgress),
+						"to_state":    string(process.StateCompleted),
+					},
+				})
 			}
-			e.dispatcher.DispatchAsync(observability.Event{
-				Type:      observability.EventProcessCompleted,
-				Timestamp: time.Now(),
-				Payload: map[string]any{
-					"instance_id": instance.ID,
-					"process_id":  instance.ProcessID,
-					"from_state":  string(process.StateInProgress),
-					"to_state":    string(process.StateCompleted),
-				},
-			})
 		}
 
 	case element.ActionTerminate:
 		if err := instance.Transition(process.StateTerminated); err != nil {
-			e.logger.Error("failed to terminate instance", "error", err)
+			return fmt.Errorf("transition to terminated: %w", err)
 		}
 		e.dispatcher.DispatchAsync(observability.Event{
 			Type:      observability.EventProcessTerminated,
@@ -520,23 +585,8 @@ func (e *Engine) handleResult(
 		// Route to next flows immediately while queue is processed asynchronously
 		nextFlows := e.router.Route(result, instance.Process, result.FlowData.ThreadID)
 		for _, nf := range nextFlows {
-			flowRecord := CreateFlowRecord(
-				instance.ID,
-				nf.ElementID,
-				nf.ElementType,
-				result.FlowData.ThreadID,
-				result.FlowData.ID,
-			)
-			if err := e.store.CreateFlow(ctx, flowRecord); err != nil {
-				return fmt.Errorf("create flow: %w", err)
-			}
-			pendingMu.Lock()
-			*pending++
-			pendingMu.Unlock()
-			select {
-			case workCh <- workItem{flow: flowRecord, threadID: nf.ThreadID}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := e.enqueueFlow(ctx, instance.ID, nf, result.FlowData.ThreadID, result.FlowData.ID, pendingMu, pending, workCh); err != nil {
+				return err
 			}
 		}
 
@@ -559,7 +609,7 @@ func (e *Engine) handleResult(
 }
 
 // finalizeInstance updates the instance record in the store.
-func (e *Engine) finalizeInstance(ctx context.Context, instance *process.Instance) error {
+func (e *engine) finalizeInstance(ctx context.Context, instance *process.Instance) error {
 	return e.store.UpdateInstance(ctx, instance.ToRecord())
 }
 

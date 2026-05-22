@@ -18,12 +18,14 @@ type Config struct {
 
 // ServerConfig holds HTTP server configuration.
 type ServerConfig struct {
-	Host         string
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	MaxBodySize  int64
+	Host           string
+	Port           int
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	MaxBodySize    int64
 	AllowedOrigins []string
+	TLSCertFile    string
+	TLSKeyFile     string
 }
 
 // DatabaseConfig holds database connection configuration.
@@ -131,6 +133,9 @@ func (c Config) Validate() error {
 	}
 	if c.Audit.Enabled && c.Audit.Dir == "" {
 		return fmt.Errorf("audit log directory must not be empty when audit is enabled")
+	}
+	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
+		return fmt.Errorf("both TLSCertFile and TLSKeyFile must be provided for TLS")
 	}
 	return nil
 }

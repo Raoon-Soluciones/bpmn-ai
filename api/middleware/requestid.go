@@ -84,10 +84,16 @@ func (rl *IPRateLimiter) Cleanup() {
 }
 
 // RateLimiter limits requests per IP based on a token bucket algorithm.
+// Uses chi.middleware.RealIP from request context for proxy-aware IP extraction.
 func RateLimiter(limiter *IPRateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := r.RemoteAddr
+			if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+				ip = realIP
+			} else if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+				ip = fwd
+			}
 			if !limiter.Allow(ip) {
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return

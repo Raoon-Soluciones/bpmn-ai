@@ -23,7 +23,7 @@ type mockExecCtx struct {
 	flow      *store.FlowRecord
 	elem      bpmn.Element
 	instance  element.Instance
-	stored    store.Store
+	stored    element.ElementStore
 	variables map[string]any
 }
 
@@ -47,7 +47,7 @@ func (m *mockExecCtx) SetVariable(key string, value any) {
 	m.variables[key] = value
 }
 
-func (m *mockExecCtx) Store() store.Store {
+func (m *mockExecCtx) Store() element.ElementStore {
 	return m.stored
 }
 

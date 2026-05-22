@@ -67,7 +67,7 @@ func main() {
 
 	// Worker pool
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store).WithDispatcher(dispatcher)
+	dlq := queue.NewDeadLetterQueue(store, store).WithDispatcher(dispatcher)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  2,
 		PollInterval: 2 * time.Second,
@@ -141,7 +141,7 @@ func main() {
 }
 
 func runScenario(
-	eng *engine.Engine,
+	eng engine.Engine,
 	store *memory.Store,
 	proc *bpmn.Process,
 	title string,

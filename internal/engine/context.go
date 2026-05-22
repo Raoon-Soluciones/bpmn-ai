@@ -15,7 +15,7 @@ type ExecutionContext struct {
 	ctx      context.Context
 	instance *process.Instance
 	flow     *store.FlowRecord
-	store    store.Store
+	store    element.ElementStore
 	logger   *observability.Logger
 }
 
@@ -24,7 +24,7 @@ func NewExecutionContext(
 	ctx context.Context,
 	instance *process.Instance,
 	flow *store.FlowRecord,
-	store store.Store,
+	store element.ElementStore,
 	logger *observability.Logger,
 ) *ExecutionContext {
 	return &ExecutionContext{
@@ -61,8 +61,8 @@ func (e *ExecutionContext) SetVariable(key string, value any) {
 	e.instance.SetVariable(key, value)
 }
 
-// Store returns the persistence store.
-func (e *ExecutionContext) Store() store.Store {
+// Store returns the element-accessible persistence interface.
+func (e *ExecutionContext) Store() element.ElementStore {
 	return e.store
 }
 

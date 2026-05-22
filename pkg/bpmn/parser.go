@@ -7,6 +7,11 @@ import (
 	"os"
 )
 
+const (
+	// MaxXMLSize is the maximum allowed BPMN XML document size (10MB).
+	MaxXMLSize = 10 << 20
+)
+
 // BPMN definitions XML structure.
 type definitions struct {
 	XMLName   xml.Name  `xml:"definitions"`
@@ -102,6 +107,10 @@ func (p *Parser) ParseFile(path string) (*Process, error) {
 
 // Parse parses BPMN XML data into a Process model.
 func (p *Parser) Parse(data []byte) (*Process, error) {
+	if len(data) > MaxXMLSize {
+		return nil, fmt.Errorf("xml document exceeds maximum size of %d bytes", MaxXMLSize)
+	}
+
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.Strict = true
 	decoder.Entity = nil

@@ -133,7 +133,7 @@ func TestRetryError(t *testing.T) {
 
 func TestDeadLetterQueue_Add(t *testing.T) {
 	s := memory.NewStore()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	job := &store.JobRecord{
 		ID:         "job-1",
@@ -175,7 +175,7 @@ func TestDeadLetterQueue_Add(t *testing.T) {
 
 func TestDeadLetterQueue_ListAll(t *testing.T) {
 	s := memory.NewStore()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	for i := 0; i < 5; i++ {
 		job := &store.JobRecord{
@@ -199,7 +199,7 @@ func TestDeadLetterQueue_ListAll(t *testing.T) {
 
 func TestDeadLetterQueue_Count(t *testing.T) {
 	s := memory.NewStore()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	for i := 0; i < 3; i++ {
 		job := &store.JobRecord{
@@ -224,7 +224,7 @@ func TestDeadLetterQueue_Count(t *testing.T) {
 func TestWorkerPool_Enqueue(t *testing.T) {
 	s := memory.NewStore()
 	retry := DefaultRetryPolicy()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 	wp := NewWorkerPool(s, nil, retry, dlq, WorkerPoolConfig{
 		Concurrency:  1,
 		PollInterval: 100 * time.Millisecond,
@@ -262,7 +262,7 @@ func TestWorkerPool_Enqueue(t *testing.T) {
 func TestWorkerPool_ProcessJob_Success(t *testing.T) {
 	s := memory.NewStore()
 	retry := DefaultRetryPolicy()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	handlerCalled := false
 	handler := func(ctx context.Context, job *store.JobRecord) error {
@@ -312,7 +312,7 @@ func TestWorkerPool_ProcessJob_Failure_Retry(t *testing.T) {
 		BaseDelay:  10 * time.Millisecond,
 		Jitter:     false,
 	}
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	attempts := 0
 	handler := func(ctx context.Context, job *store.JobRecord) error {
@@ -363,7 +363,7 @@ func TestWorkerPool_ProcessJob_Failure_DeadLetter(t *testing.T) {
 		BaseDelay:  10 * time.Millisecond,
 		Jitter:     false,
 	}
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	handler := func(ctx context.Context, job *store.JobRecord) error {
 		return errors.New("permanent error")
@@ -404,7 +404,7 @@ func TestWorkerPool_ProcessJob_Failure_DeadLetter(t *testing.T) {
 func TestWorkerPool_NoHandler(t *testing.T) {
 	s := memory.NewStore()
 	retry := DefaultRetryPolicy()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	wp := NewWorkerPool(s, nil, retry, dlq, WorkerPoolConfig{
 		Concurrency:  1,
@@ -440,7 +440,7 @@ func TestWorkerPool_NoHandler(t *testing.T) {
 func TestWorkerPool_ScheduledJobs(t *testing.T) {
 	s := memory.NewStore()
 	retry := DefaultRetryPolicy()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	handlerCalled := false
 	handler := func(ctx context.Context, job *store.JobRecord) error {
@@ -486,7 +486,7 @@ func TestWorkerPool_ScheduledJobs(t *testing.T) {
 func TestWorkerPool_ConcurrentWorkers(t *testing.T) {
 	s := memory.NewStore()
 	retry := DefaultRetryPolicy()
-	dlq := NewDeadLetterQueue(s)
+	dlq := NewDeadLetterQueue(s, s)
 
 	processed := 0
 	var mu sync.Mutex

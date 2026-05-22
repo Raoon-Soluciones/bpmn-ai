@@ -16,7 +16,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/activities"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
@@ -31,7 +30,7 @@ import (
 
 var (
 	storeInstance  store.Store
-	engineInstance *engine.Engine
+	engineInstance engine.Engine
 	auditWriter    *observability.FileAuditWriter
 	dispatcher     *observability.Dispatcher
 	logger         *observability.Logger
@@ -55,7 +54,7 @@ func main() {
 
 	// Worker pool for ServiceTask
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(storeInstance).WithDispatcher(dispatcher)
+	dlq := queue.NewDeadLetterQueue(storeInstance, storeInstance).WithDispatcher(dispatcher)
 	workerPool = queue.NewWorkerPool(storeInstance, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  2,
 		PollInterval: 2 * time.Second,
@@ -229,19 +228,17 @@ func startCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ejecutar el engine
-	execCtx, execCancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer execCancel()
-
-	if err := engineInstance.Run(execCtx, instance); err != nil {
-		// Si el error es porque termino en WAITING no es realmente un error
-		if instance.State != process.StateWaiting {
-			logger.Error("error ejecutando proceso", "error", err, "case_id", instance.ID)
+	// Ejecutar el engine en background
+	go func() {
+		execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer execCancel()
+		if err := engineInstance.Run(execCtx, instance); err != nil {
+			if instance.State != process.StateWaiting {
+				logger.Error("error ejecutando proceso", "error", err, "case_id", instance.ID)
+			}
 		}
-	}
-
-	// Actualizar en store
-	storeInstance.UpdateInstance(r.Context(), instance.ToRecord())
+		storeInstance.UpdateInstance(context.Background(), instance.ToRecord())
+	}()
 
 	logger.Info("caso iniciado", "case_id", instance.ID, "status", instance.State)
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -343,185 +340,20 @@ func completeTask(w http.ResponseWriter, r *http.Request) {
 	flow.DurationMs = &d
 	storeInstance.UpdateFlow(r.Context(), flow)
 
-	// Actualizar variables en la instancia
-	c, _ := storeInstance.GetInstance(r.Context(), flow.InstanceID)
-	if c.Variables == nil {
-		c.Variables = make(map[string]any)
-	}
-	for k, v := range req.Variables {
-		c.Variables[k] = v
-	}
-
-	// Reconstruir instancia para el engine
-	proc, _ := storeInstance.GetProcess(r.Context(), c.ProcessID)
-	instance := process.NewInstance(proc, c.Variables)
-	instance.ID = c.ID
-	instance.State = process.State(c.Status)
-
-	// Continuar ejecucion desde el elemento completado
-	continueExecution(context.Background(), instance, flow)
-
-	// Guardar estado actualizado
-	storeInstance.UpdateInstance(context.Background(), instance.ToRecord())
+	// Continuar ejecucion en background usando el engine
+	go func() {
+		execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := engineInstance.Continue(execCtx, flow.InstanceID, flowID, req.Variables); err != nil {
+			logger.Error("engine continuation failed", "error", err, "instance_id", flow.InstanceID)
+		}
+	}()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id": flowID,
 		"status":  "COMPLETED",
-		"case_status": instance.State,
 	})
 }
-
-// continueExecution ejecuta los elementos siguientes despues de completar un UserTask.
-func continueExecution(ctx context.Context, instance *process.Instance, completedFlow *store.FlowRecord) {
-	instance.Transition(process.StateInProgress)
-
-	router := engine.NewFlowRouter()
-	execResult := element.ExecutionResult{
-		Action:   element.ActionRoute,
-		FlowData: completedFlow,
-	}
-	nextFlows := router.Route(execResult, instance.Process, completedFlow.ThreadID)
-
-	for executeNextFlow(ctx, instance, nextFlows) {
-	}
-}
-
-// executeNextFlow ejecuta un conjunto de flows y retorna true si hay mas por procesar.
-func executeNextFlow(ctx context.Context, instance *process.Instance, flows []engine.NextFlow) bool {
-	var nextFlows []engine.NextFlow
-
-	for _, nf := range flows {
-		elemDef, ok := instance.Process.Elements[nf.ElementID]
-		if !ok {
-			continue
-		}
-
-		flowRecord := engine.CreateFlowRecord(
-			instance.ID, nf.ElementID, nf.ElementType,
-			nf.ThreadID, "",
-		)
-		storeInstance.CreateFlow(ctx, flowRecord)
-
-		execElement, err := engineInstance.Registry().Get(elemDef)
-		if err != nil {
-			logger.Error("error obteniendo elemento", "error", err)
-			continue
-		}
-
-		execCtx := engine.NewExecutionContext(ctx, instance, flowRecord, storeInstance, logger)
-		result := execElement.Execute(ctx, execCtx)
-
-		now := time.Now()
-		flowRecord.FinishedAt = &now
-		d := result.DurationMs
-		flowRecord.DurationMs = &d
-		storeInstance.UpdateFlow(ctx, flowRecord)
-
-		dispatcher.Dispatch(observability.Event{
-			Type:      observability.EventElementExecuted,
-			Timestamp: time.Now(),
-			Payload: map[string]any{
-				"instance_id":  instance.ID,
-				"process_id":   instance.ProcessID,
-				"element_id":   nf.ElementID,
-				"element_type": string(nf.ElementType),
-				"action":       string(result.Action),
-				"thread_id":    nf.ThreadID,
-				"duration_ms":  result.DurationMs,
-			},
-		})
-
-		storeInstance.LogExecution(ctx, &store.ExecutionLogEntry{
-			InstanceID:  instance.ID,
-			ElementID:   nf.ElementID,
-			ElementType: nf.ElementType,
-			Action:      string(result.Action),
-			DurationMs:  result.DurationMs,
-		})
-
-		switch result.Action {
-		case element.ActionRoute:
-			next := router.Route(result, instance.Process, nf.ThreadID)
-			nextFlows = append(nextFlows, next...)
-		case element.ActionComplete:
-			if isEndEvent(nf.ElementID, instance.Process) {
-				instance.Transition(process.StateCompleted)
-				dispatcher.Dispatch(observability.Event{
-					Type:      observability.EventProcessCompleted,
-					Timestamp: time.Now(),
-					Payload: map[string]any{
-						"instance_id": instance.ID,
-						"process_id":  instance.ProcessID,
-						"from_state":  string(process.StateInProgress),
-						"to_state":    string(process.StateCompleted),
-					},
-				})
-				return false
-			}
-		case element.ActionForm, element.ActionWait:
-			instance.Transition(process.StateWaiting)
-			dispatcher.Dispatch(observability.Event{
-				Type:      observability.EventProcessCompleted,
-				Timestamp: time.Now(),
-				Payload: map[string]any{
-					"instance_id": instance.ID,
-					"process_id":  instance.ProcessID,
-					"from_state":  string(process.StateInProgress),
-					"to_state":    string(process.StateWaiting),
-				},
-			})
-			return false
-		case element.ActionQueue:
-			next := router.Route(result, instance.Process, nf.ThreadID)
-			nextFlows = append(nextFlows, next...)
-		case element.ActionError:
-			instance.Transition(process.StateError)
-			dispatcher.Dispatch(observability.Event{
-				Type:      observability.EventProcessError,
-				Timestamp: time.Now(),
-				Payload: map[string]any{
-					"instance_id": instance.ID,
-					"process_id":  instance.ProcessID,
-					"from_state":  string(process.StateInProgress),
-					"to_state":    string(process.StateError),
-					"error":       result.Error.Error(),
-				},
-			})
-			return false
-		case element.ActionTerminate:
-			instance.Transition(process.StateTerminated)
-			dispatcher.Dispatch(observability.Event{
-				Type:      observability.EventProcessTerminated,
-				Timestamp: time.Now(),
-				Payload: map[string]any{
-					"instance_id": instance.ID,
-					"process_id":  instance.ProcessID,
-					"from_state":  string(process.StateInProgress),
-					"to_state":    string(process.StateTerminated),
-				},
-			})
-			return false
-		}
-	}
-
-	if len(nextFlows) > 0 {
-		return executeNextFlow(ctx, instance, nextFlows)
-	}
-
-	// Si no hay mas flows y no se completo, verificar end event
-	instance.Transition(process.StateCompleted)
-	return false
-}
-
-func isEndEvent(elementID string, proc *bpmn.Process) bool {
-	elem, ok := proc.Elements[elementID]
-	if !ok {
-		return false
-	}
-	return elem.Type == bpmn.ElementTypeEndEvent || elem.Type == bpmn.ElementTypeTerminateEvent
-}
-
-var router = engine.NewFlowRouter()
 
 func getAuditLog(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir("./data/audit_logs")

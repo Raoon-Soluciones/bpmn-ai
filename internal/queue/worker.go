@@ -15,13 +15,13 @@ type JobHandler func(ctx context.Context, job *store.JobRecord) error
 
 // WorkerPool polls for pending jobs and processes them concurrently.
 type WorkerPool struct {
-	store      store.Store
-	handler    JobHandler
-	retry      *RetryPolicy
-	dlq        *DeadLetterQueue
+	store       JobStore
+	handler     JobHandler
+	retry       *RetryPolicy
+	dlq         *DeadLetterQueue
 	concurrency int
 	pollInterval time.Duration
-	stopCh     chan struct{}
+	stopCh      chan struct{}
 	wg         sync.WaitGroup
 	dispatcher *observability.Dispatcher
 }
@@ -33,7 +33,7 @@ type WorkerPoolConfig struct {
 }
 
 // NewWorkerPool creates a new worker pool.
-func NewWorkerPool(s store.Store, handler JobHandler, retry *RetryPolicy, dlq *DeadLetterQueue, cfg WorkerPoolConfig) *WorkerPool {
+func NewWorkerPool(s JobStore, handler JobHandler, retry *RetryPolicy, dlq *DeadLetterQueue, cfg WorkerPoolConfig) *WorkerPool {
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}

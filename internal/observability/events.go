@@ -19,6 +19,7 @@ type EventHandler func(event Event)
 type Dispatcher struct {
 	mu       sync.RWMutex
 	handlers map[string][]EventHandler
+	wg       sync.WaitGroup
 }
 
 // NewDispatcher creates a new event dispatcher.
@@ -53,8 +54,17 @@ func (d *Dispatcher) DispatchAsync(event Event) {
 	d.mu.RUnlock()
 
 	for _, h := range handlers {
-		go h(event)
+		d.wg.Add(1)
+		go func(handler EventHandler) {
+			defer d.wg.Done()
+			handler(event)
+		}(h)
 	}
+}
+
+// Drain waits for all in-flight async handlers to complete.
+func (d *Dispatcher) Drain() {
+	d.wg.Wait()
 }
 
 // Event types for the BPMN engine.

@@ -155,6 +155,44 @@ docker-compose up -d
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Segregación de Interfaces
+
+Cada componente define su propia interfaz de almacenamiento siguiendo el Principio de Segregación de Interfaces (ISP), en lugar de compartir el monolítico `store.Store` de 26 métodos:
+
+| Interfaz | Paquete | Métodos | Usado Por |
+|----------|---------|---------|-----------|
+| `EngineStore` | `internal/engine/store.go` | 10 (process, instance, flow, thread, job, log) | Motor central |
+| `ElementStore` | `internal/element/store.go` | 1 (GetFlowsByInstance) | Elementos BPMN vía ExecutionContext |
+| `JobStore` | `internal/queue/store.go` | 4 (CRUD jobs) | WorkerPool, DeadLetterQueue |
+| `DeadLetterStore` | `internal/queue/store.go` | 4 (CRUD dead letters) | DeadLetterQueue |
+
+Los stores en memoria y PostgreSQL satisfacen todas las interfaces implícitamente mediante duck typing de Go — sin necesidad de código adaptador. La interfaz completa `store.Store` se conserva para la capa API que necesita el acceso más amplio.
+
+```
+┌──────────────────┐    ┌──────────────┐    ┌──────────────────┐
+│   Capa API       │    │    Motor     │    │ Elementos BPMN   │
+│  (store.Store)   │    │(EngineStore) │    │ (ElementStore)   │
+├──────────────────┤    ├──────────────┤    ├──────────────────┤
+│                  │    │              │    │                  │
+│ SaveProcess      │    │ GetProcess   │    │ GetFlowsByInst   │
+│ ListProcesses    │    │ GetInstance  │    │                  │
+│ CreateInstance   │    │ UpdateInst   │    │                  │
+│ GetFlow          │    │ CreateFlow   │    │                  │
+│ UpdateFlow       │    │ GetFlow      │    │                  │
+│ ... (26 total)   │    │ ...          │    │                  │
+└──────────────────┘    └──────────────┘    └──────────────────┘
+         │                      │                     │
+         └──────────────────────┼─────────────────────┘
+                                │
+                     ┌──────────▼──────────┐
+                     │   Store (memoria/sql)│
+                     │  (satisface implíci- │
+                     │  tamente 4 + API)    │
+                     └─────────────────────┘
+```
+
+El paquete queue se divide además en `JobStore` (4 métodos) y `DeadLetterStore` (4 métodos) — `DeadLetterQueue` requiere ambos porque añadir una carta muerta también actualiza el estado del trabajo.
+
 ### Bucle de Ejecución
 
 ```
@@ -482,8 +520,10 @@ bpmn-ai/
 │   │   ├── result.go              # Tipos de resultado de ejecución
 │   │   ├── router.go              # Lógica de enrutamiento de flujos
 │   │   ├── failsafe.go            # Detección de timeout y bucles
-│   │   └── registry.go            # Factory de elementos
+│   │   ├── registry.go            # Factory de elementos
+│   │   └── store.go               # Interfaz EngineStore (10 métodos)
 │   ├── element/                   # Implementaciones de elementos BPMN
+│   │   ├── store.go               # Interfaz ElementStore (1 método)
 │   │   ├── element.go             # Interfaces base
 │   │   ├── activity.go            # Interfaz de actividad
 │   │   ├── gateway.go             # Interfaz de compuerta
@@ -498,7 +538,8 @@ bpmn-ai/
 │   ├── queue/                     # Sistema de cola de trabajos
 │   │   ├── retry.go               # Política de reintentos con backoff exponencial
 │   │   ├── deadletter.go          # Cola de mensajes muertos
-│   │   └── worker.go              # Pool de workers con control de concurrencia
+│   │   ├── worker.go              # Pool de workers con control de concurrencia
+│   │   └── store.go               # Interfaces JobStore + DeadLetterStore
 │   └── observability/             # Logging, métricas, eventos
 │       ├── logger.go              # Logging estructurado (slog)
 │       ├── metrics.go             # Métricas Prometheus (10 métricas)
@@ -749,7 +790,7 @@ func main() {
     store := memory.NewStore()
     logger, _ := observability.NewFromConfig("info", "json")
     retry := queue.DefaultRetryPolicy()
-    dlq := queue.NewDeadLetterQueue(store)
+    dlq := queue.NewDeadLetterQueue(store, store)
     q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
         Concurrency:  4,
         PollInterval: 5 * time.Second,

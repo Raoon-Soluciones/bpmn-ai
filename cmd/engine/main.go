@@ -12,8 +12,13 @@ import (
 
 	"github.com/Raoon-Soluciones/bpmn-ai/api/http"
 	"github.com/Raoon-Soluciones/bpmn-ai/config"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/activities"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
 )
 
@@ -42,7 +47,7 @@ func main() {
 	_ = observability.NewAuditor(dispatcher, auditWriter)
 
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store).WithDispatcher(dispatcher)
+	dlq := queue.NewDeadLetterQueue(store, store).WithDispatcher(dispatcher)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  cfg.Engine.WorkerCount,
 		PollInterval: cfg.Engine.QueuePollInterval,
@@ -53,13 +58,37 @@ func main() {
 
 	q.Start(ctx)
 
+	registry := engine.NewElementRegistry()
+	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
+	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
+	registry.Register(bpmn.ElementTypeTerminateEvent, events.NewTerminateEvent)
+	registry.Register(bpmn.ElementTypeTimerEvent, events.NewTimerEvent)
+	registry.Register(bpmn.ElementTypeMessageThrow, events.NewMessageThrowEvent)
+	registry.Register(bpmn.ElementTypeMessageCatch, events.NewMessageCatchEvent)
+	registry.Register(bpmn.ElementTypeExclusiveGateway, gateways.NewExclusiveGateway)
+	registry.Register(bpmn.ElementTypeParallelGateway, gateways.NewParallelGateway)
+	registry.Register(bpmn.ElementTypeInclusiveGateway, gateways.NewInclusiveGateway)
+	registry.Register(bpmn.ElementTypeEventBasedGateway, gateways.NewEventBasedGateway)
+	registry.Register(bpmn.ElementTypeUserTask, activities.NewUserTask)
+	registry.Register(bpmn.ElementTypeScriptTask, activities.NewScriptTask)
+	registry.Register(bpmn.ElementTypeServiceTask, activities.NewServiceTask)
+
+	eng := engine.New(engine.Config{
+		WorkerCount:      cfg.Engine.WorkerCount,
+		MaxLoops:         cfg.Engine.MaxLoops,
+		ExecutionTimeout: cfg.Engine.ExecutionTimeout,
+	}, registry, store, logger, q)
+	eng.WithDispatcher(dispatcher)
+
 	srv := http.NewServer(http.ServerConfig{
 		Host:         cfg.Server.Host,
 		Port:         cfg.Server.Port,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
-	}, store, q, logger, metrics)
+		TLSCertFile:  cfg.Server.TLSCertFile,
+		TLSKeyFile:   cfg.Server.TLSKeyFile,
+	}, store, eng, q, logger, metrics)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

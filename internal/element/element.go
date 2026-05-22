@@ -44,7 +44,7 @@ type ExecutionContext interface {
 	Flow() *store.FlowRecord
 	GetVariable(key string) (any, bool)
 	SetVariable(key string, value any)
-	Store() store.Store
+	Store() ElementStore
 	Element() (bpmn.Element, bool)
 }
 

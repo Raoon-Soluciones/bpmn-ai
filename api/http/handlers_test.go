@@ -2,13 +2,16 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -17,6 +20,13 @@ import (
 
 const testUUID = "123e4567-e89b-12d3-a456-426614174000"
 
+type noopEngine struct{}
+
+func (noopEngine) Registry() *engine.ElementRegistry                                  { return nil }
+func (noopEngine) Run(_ context.Context, _ *process.Instance) error                    { return nil }
+func (noopEngine) Continue(_ context.Context, _, _ string, _ map[string]any) error     { return nil }
+func (n noopEngine) WithDispatcher(_ *observability.Dispatcher) engine.Engine          { return n }
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -24,7 +34,7 @@ func newTestServer(t *testing.T) *Server {
 	logger, _ := observability.NewFromConfig("error", "text")
 	metrics := observability.NewMetrics()
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store)
+	dlq := queue.NewDeadLetterQueue(store, store)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  1,
 		PollInterval: 5 * time.Second,
@@ -37,7 +47,7 @@ func newTestServer(t *testing.T) *Server {
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,
 		DisableCSRF:  true,
-	}, store, q, logger, metrics)
+	}, store, noopEngine{}, q, logger, metrics)
 }
 
 func TestHealthCheck(t *testing.T) {
@@ -461,7 +471,7 @@ func TestCSRF_RejectsPostWithoutToken(t *testing.T) {
 	logger, _ := observability.NewFromConfig("error", "text")
 	metrics := observability.NewMetrics()
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store)
+	dlq := queue.NewDeadLetterQueue(store, store)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  1,
 		PollInterval: 5 * time.Second,
@@ -472,7 +482,7 @@ func TestCSRF_RejectsPostWithoutToken(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,
-	}, store, q, logger, metrics)
+	}, store, noopEngine{}, q, logger, metrics)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/processes", nil)
 	rec := httptest.NewRecorder()
@@ -488,7 +498,7 @@ func TestCSRF_AcceptsPostWithValidToken(t *testing.T) {
 	logger, _ := observability.NewFromConfig("error", "text")
 	metrics := observability.NewMetrics()
 	retry := queue.DefaultRetryPolicy()
-	dlq := queue.NewDeadLetterQueue(store)
+	dlq := queue.NewDeadLetterQueue(store, store)
 	q := queue.NewWorkerPool(store, nil, retry, dlq, queue.WorkerPoolConfig{
 		Concurrency:  1,
 		PollInterval: 5 * time.Second,
@@ -499,7 +509,7 @@ func TestCSRF_AcceptsPostWithValidToken(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,
-	}, store, q, logger, metrics)
+	}, store, noopEngine{}, q, logger, metrics)
 
 	// First get a CSRF token
 	tokenReq := httptest.NewRequest(http.MethodGet, "/api/v1/csrf-token", nil)

@@ -280,11 +280,31 @@ Estados de job: `PENDING → RUNNING → COMPLETED`, con reintentos `FAILED → 
 
 RetryPolicy: `delay = BaseDelay × 2^retryCount` (capped at MaxDelay) + jitter ±25%. Default: 3 reintentos, base 1s, max 5m.
 
-### 2.9 Persistencia (Store)
+### 2.9 Persistencia (Store) — Segregación de Interfaces
 
-Interfaz `pkg/store/store.go` con 26 métodos para procesos, instancias, flujos, hilos, jobs, dead letters y execution log.
+En lugar de una única interfaz monolítica, cada componente define su propia interfaz de almacenamiento siguiendo el **Principio de Segregación de Interfaces (ISP)**:
 
-- **In-Memory** (`pkg/store/memory/`): para testing y desarrollo local
+| Interfaz | Paquete | Métodos | Consumidor |
+|----------|---------|---------|------------|
+| `EngineStore` | `internal/engine/store.go` | 10 (process, instance, flow, thread, job, log) | Motor central (`internal/engine/`) |
+| `ElementStore` | `internal/element/store.go` | 1 (GetFlowsByInstance) | Elementos BPMN vía ExecutionContext |
+| `JobStore` | `internal/queue/store.go` | 4 (create, update, get, list pendientes) | WorkerPool, DeadLetterQueue |
+| `DeadLetterStore` | `internal/queue/store.go` | 4 (create, get por instancia, get por ID, list) | DeadLetterQueue |
+
+La interfaz completa `store.Store` (26 métodos) se conserva para la capa API, que necesita el acceso más amplio. Los stores en memoria y PostgreSQL satisfacen todas las interfaces estrechas implícitamente mediante duck typing de Go — sin necesidad de código adaptador.
+
+```
+API Layer ──→ store.Store (26 métodos)
+Engine   ──→ EngineStore (10 métodos)
+Elements ──→ ElementStore (1 método)
+Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
+                │
+                ▼
+         En Memoria / PostgreSQL
+         (satisfacen implícitamente 4 + API)
+```
+
+- **En Memoria** (`pkg/store/memory/`): para testing y desarrollo local
 - **PostgreSQL** (`pkg/store/sql/`): arquitectura definida con 7 tablas (processes, instances, flows, threads, jobs, dead_letters, execution_log), migraciones documentadas
 
 ### 2.10 Eventos y Observabilidad

@@ -27,7 +27,7 @@ func (m *mockExecCtx) GetVariable(key string) (any, bool) {
 
 func (m *mockExecCtx) SetVariable(key string, value any) {}
 
-func (m *mockExecCtx) Store() store.Store {
+func (m *mockExecCtx) Store() element.ElementStore {
 	return nil
 }
 

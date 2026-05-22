@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
+
+const bpmnParseTimeout = 30 * time.Second
 
 type createProcessRequest struct {
 	Name    string `json:"name"`
@@ -50,13 +53,31 @@ func (s *Server) createProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parser := bpmn.NewParser()
-	proc, err := parser.Parse([]byte(req.BPMNXML))
-	if err != nil {
-		s.logger.Error("bpmn parse error", "error", err)
-		writeError(w, http.StatusBadRequest, "invalid BPMN XML format")
+	parseCtx, parseCancel := context.WithTimeout(r.Context(), bpmnParseTimeout)
+	defer parseCancel()
+	done := make(chan *bpmn.Process, 1)
+	var parseErr error
+	go func() {
+		p, err := parser.Parse([]byte(req.BPMNXML))
+		if err != nil {
+			parseErr = err
+			done <- nil
+			return
+		}
+		done <- p
+	}()
+	var proc *bpmn.Process
+	select {
+	case proc = <-done:
+		if proc == nil {
+			s.logger.Error("bpmn parse error", "error", parseErr)
+			writeError(w, http.StatusBadRequest, "invalid BPMN XML format")
+			return
+		}
+	case <-parseCtx.Done():
+		writeError(w, http.StatusRequestTimeout, "BPMN parsing timed out")
 		return
 	}
-
 	proc.Name = req.Name
 
 	if err := s.store.SaveProcess(r.Context(), proc); err != nil {
@@ -142,6 +163,16 @@ func (s *Server) startCase(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CreateInstance(r.Context(), instance.ToRecord()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create case")
 		return
+	}
+
+	if s.engine != nil {
+		go func() {
+			execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.engine.Run(execCtx, instance); err != nil {
+				s.logger.Error("engine execution failed", "error", err, "instance_id", instance.ID)
+			}
+		}()
 	}
 
 	s.logger.Info("case started", "case_id", instance.ID, "process_id", id)
@@ -358,6 +389,16 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateFlow(r.Context(), flow); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to complete task")
 		return
+	}
+
+	if s.engine != nil {
+		go func() {
+			execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.engine.Continue(execCtx, flow.InstanceID, flow.ID, req.Variables); err != nil {
+				s.logger.Error("engine continuation failed", "error", err, "instance_id", flow.InstanceID)
+			}
+		}()
 	}
 
 	s.logger.Info("task completed", "task_id", id)

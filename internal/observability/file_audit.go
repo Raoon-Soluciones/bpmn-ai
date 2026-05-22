@@ -2,6 +2,7 @@ package observability
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,12 +105,17 @@ func (w *FileAuditWriter) writeToState(instanceID string, text string) {
 }
 
 func writeFile(f *os.File, s string) {
-	f.WriteString(s)
-	f.Sync()
+	_, err := f.WriteString(s)
+	if err != nil {
+		// write errors are non-fatal for audit
+	}
 }
 
 func (w *FileAuditWriter) HandleEvent(event Event) {
 	if !w.enabled {
+		return
+	}
+	if event.Payload == nil {
 		return
 	}
 	instanceID := extractString(event.Payload, "instance_id")
@@ -371,9 +377,12 @@ func (w *FileAuditWriter) Close() error {
 	w.wmu.Lock()
 	defer w.wmu.Unlock()
 	for _, st := range w.instances {
+		st.mu.Lock()
 		if st.file != nil {
 			st.file.Close()
+			st.file = nil
 		}
+		st.mu.Unlock()
 	}
 	w.instances = make(map[string]*instanceAuditState)
 	return nil
@@ -415,8 +424,10 @@ func extractInt(payload map[string]any, key string) int {
 	switch n := v.(type) {
 	case int:
 		return n
-	case float64:
+	case int64:
 		return int(n)
+	case float64:
+		return int(math.Round(n))
 	default:
 		return 0
 	}
