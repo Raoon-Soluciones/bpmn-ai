@@ -327,7 +327,7 @@ log:
 
 audit:
   enabled: true
-  file_path: ./data/audit.jsonl
+  dir: ./data/audit
 ```
 
 ### Variables de Entorno
@@ -336,7 +336,7 @@ audit:
 |----------|-------------------|-------------|
 | `DATABASE_URL` | `postgres://...` | Cadena de conexión PostgreSQL |
 | `AUDIT_LOG_ENABLED` | `true` | Activar/desactivar el registro de auditoría |
-| `AUDIT_LOG_FILE_PATH` | `./data/audit.jsonl` | Ruta del archivo de auditoría JSON Lines |
+| `AUDIT_LOG_DIR` | `./data/audit` | Directorio para archivos de auditoría por instancia |
 
 ---
 
@@ -410,50 +410,60 @@ Los eventos pueden ser consumidos sincrónica o asincrónicamente vía el `Dispa
 
 ### Registro de Auditoría
 
-El motor también escribe un registro de auditoría estructurado en un archivo JSON Lines (`.jsonl`). Cada evento emitido por el dispatcher se registra como una línea JSON independiente, capturando el contexto completo de ejecución:
+El motor escribe un registro de auditoría legible en un archivo por instancia de proceso dentro del directorio configurado. Cada archivo traza cada elemento BPMN ejecutado, mostrando la ruta de ejecución, las ramas de hilos, las duraciones y los resultados.
 
-| Campo | Descripción |
-|-------|-------------|
-| `id` | Identificador único de la entrada |
-| `instance_id` | ID de la instancia del proceso |
-| `process_id` | ID de la definición del proceso |
-| `element_id` | ID del elemento (si aplica) |
-| `element_type` | Tipo de elemento (ej. `startEvent`, `exclusiveGateway`) |
-| `action` | Acción de ejecución (ej. `ROUTE`, `WAIT`, `ERROR`) |
-| `event_type` | Tipo de evento (ej. `element.executed`, `process.completed`) |
-| `timestamp` | Marca de tiempo ISO 8601 |
-| `thread_id` | ID del hilo de ejecución |
-| `parent_index` | Índice del hilo padre (ramas paralelas) |
-| `from_state` | Estado anterior de la instancia |
-| `to_state` | Nuevo estado de la instancia |
-| `error_message` | Detalles del error (si aplica) |
-| `payload` | Contexto adicional (variables, decisiones de compuertas, etc.) |
+**Ejemplo de salida (`audit_<id_instancia>.log`):**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ BPMN Execution Audit
+ Process:   Audit Parallel (proc-audit-par)
+ Instance:  550e8400-e29b-41d4-a716-446655440000
+ Started:   2026-05-20 10:30:00.123
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1.  Thread 1  │  start-1 "Start"  │  startEvent
+      ROUTE  ·  2ms
+
+  2.  Thread 1  │  gw-div "Split"  │  parallelGateway
+      ROUTE  ·  1ms
+      Branches: → end-a, → end-b
+
+  3.  Thread 11  │  end-a "End A"  │  endEvent
+      COMPLETE  ·  1ms
+
+  4.  Thread 12  │  end-b "End B"  │  endEvent
+      COMPLETE  ·  1ms
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Result: COMPLETED
+ Duration: 45ms
+ Elements: 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
 
 **Configuración vía archivo `.env`:**
 
 ```bash
 # .env
 AUDIT_LOG_ENABLED=true
-AUDIT_LOG_FILE_PATH=./data/audit.jsonl
+AUDIT_LOG_DIR=./data/audit
 ```
 
-**Inspeccionar el registro de auditoría:**
+**Inspeccionar los registros de auditoría:**
 
 ```bash
-# Tail en vivo
-tail -f ./data/audit.jsonl
+# Listar todos los archivos
+ls ./data/audit/
 
-# Filtrar por tipo de evento
-jq 'select(.event_type=="element.executed")' ./data/audit.jsonl
+# Tail de una instancia específica
+tail -f ./data/audit/audit_<id_instancia>.log
 
-# Filtrar por tipo de elemento
-jq 'select(.element_type=="exclusiveGateway")' ./data/audit.jsonl
-
-# Extraer todos los IDs de instancia
-jq -r '.instance_id' ./data/audit.jsonl | sort -u
+# Buscar errores en todos los archivos
+grep "ERROR" ./data/audit/*.log
 ```
 
-El registro de auditoría es aditivo — el `ExecutionLogEntry` existente se conserva. Cuando la auditoría está desactivada (`AUDIT_LOG_ENABLED=false`), los eventos aún se distribuyen pero no se escriben entradas en el archivo.
+El registro de auditoría es aditivo — el `ExecutionLogEntry` existente se conserva. Cuando la auditoría está desactivada (`AUDIT_LOG_ENABLED=false`), los eventos aún se distribuyen pero no se escriben entradas en los archivos.
 
 ---
 
@@ -744,7 +754,7 @@ func main() {
     })
 
     dispatcher := observability.NewDispatcher()
-    writer, _ := observability.NewFileAuditWriter("./data/audit.jsonl", true, logger)
+    writer, _ := observability.NewFileAuditWriter("./data/audit", true, logger)
     defer writer.Close()
     observability.NewAuditor(dispatcher, writer)
     q.WithDispatcher(dispatcher)

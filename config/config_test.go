@@ -26,8 +26,8 @@ func TestDefault(t *testing.T) {
 	if !c.Audit.Enabled {
 		t.Error("expected audit enabled by default")
 	}
-	if c.Audit.FilePath != "./data/audit.jsonl" {
-		t.Errorf("expected audit file path ./data/audit.jsonl, got %s", c.Audit.FilePath)
+	if c.Audit.Dir != "./data/audit" {
+		t.Errorf("expected audit dir ./data/audit, got %s", c.Audit.Dir)
 	}
 }
 
@@ -75,12 +75,12 @@ func TestValidate_InvalidTimeout(t *testing.T) {
 	}
 }
 
-func TestValidate_EmptyAuditPath(t *testing.T) {
+func TestValidate_EmptyAuditDir(t *testing.T) {
 	c := Default()
 	c.Audit.Enabled = true
-	c.Audit.FilePath = ""
+	c.Audit.Dir = ""
 	if err := c.Validate(); err == nil {
-		t.Fatal("expected error for empty audit path when enabled")
+		t.Fatal("expected error for empty audit dir when enabled")
 	}
 }
 
@@ -89,7 +89,7 @@ func TestAuditDefaults(t *testing.T) {
 	if c.Audit.Enabled != true {
 		t.Error("expected audit enabled by default")
 	}
-	if c.Audit.FilePath == "" {
-		t.Error("expected non-empty audit file path")
+	if c.Audit.Dir == "" {
+		t.Error("expected non-empty audit dir")
 	}
 }

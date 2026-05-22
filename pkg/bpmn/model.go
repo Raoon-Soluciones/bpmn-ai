@@ -41,6 +41,8 @@ type Element struct {
 	Type          ElementType
 	IncomingFlows []string
 	OutgoingFlows []string
+	Incoming      []string // raw incoming element IDs from XML (used for wiring)
+	Outgoing      []string // raw outgoing element IDs from XML (used for wiring)
 
 	// Event-specific fields
 	EventDefinition EventDefinition

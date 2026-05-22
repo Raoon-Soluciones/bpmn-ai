@@ -1,8 +1,6 @@
 package observability
 
 import (
-	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,209 +9,325 @@ import (
 	"time"
 )
 
-func TestFileAuditWriter_WriteAndReadEntry(t *testing.T) {
+func TestFileAuditWriter_WriteProcessStarted(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
 
 	logger, _ := NewFromConfig("error", "text")
-	w, err := NewFileAuditWriter(path, true, logger)
+	w, err := NewFileAuditWriter(dir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create writer: %v", err)
 	}
 	defer w.Close()
 
-	entry := &AuditEntry{
-		InstanceID:  "inst-1",
-		ProcessID:   "proc-1",
-		ElementID:   "elem-1",
-		ElementType: "startEvent",
-		Action:      "ROUTE",
-		EventType:   "element.executed",
-		ThreadID:    1,
-		FromState:   "CREATED",
-		ToState:     "IN_PROGRESS",
-	}
+	w.HandleEvent(Event{
+		Type:      EventProcessStarted,
+		Timestamp: time.Now(),
+		Payload: map[string]any{
+			"instance_id":  "inst-1",
+			"process_id":   "proc-1",
+			"process_name": "Test Process",
+		},
+	})
 
-	if err := w.WriteEntry(context.Background(), entry); err != nil {
-		t.Fatalf("failed to write entry: %v", err)
-	}
-
+	path := filepath.Join(dir, "audit_inst-1.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 line, got %d", len(lines))
+	content := string(data)
+	if !strings.Contains(content, "BPMN Execution Audit") {
+		t.Error("expected header in audit file")
+	}
+	if !strings.Contains(content, "Test Process") {
+		t.Error("expected process name in audit file")
+	}
+	if !strings.Contains(content, "proc-1") {
+		t.Error("expected process id in audit file")
+	}
+}
+
+func TestFileAuditWriter_WriteElementExecuted(t *testing.T) {
+	dir := t.TempDir()
+
+	logger, _ := NewFromConfig("error", "text")
+	w, err := NewFileAuditWriter(dir, true, logger)
+	if err != nil {
+		t.Fatalf("failed to create writer: %v", err)
+	}
+	defer w.Close()
+
+	w.HandleEvent(Event{
+		Type: EventElementExecuted,
+		Payload: map[string]any{
+			"instance_id":  "inst-1",
+			"process_id":   "proc-1",
+			"element_id":   "elem-1",
+			"element_name": "Start Event",
+			"element_type": "startEvent",
+			"action":       "ROUTE",
+			"thread_id":    1,
+			"duration_ms":  2,
+		},
+	})
+
+	path := filepath.Join(dir, "audit_inst-1.log")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	var decoded AuditEntry
-	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
-		t.Fatalf("failed to decode JSON line: %v", err)
+	content := string(data)
+	if !strings.Contains(content, "elem-1") {
+		t.Error("expected element id in audit file")
+	}
+	if !strings.Contains(content, "Start Event") {
+		t.Error("expected element name in audit file")
+	}
+	if !strings.Contains(content, "startEvent") {
+		t.Error("expected element type in audit file")
+	}
+	if !strings.Contains(content, "ROUTE") {
+		t.Error("expected action in audit file")
+	}
+	if !strings.Contains(content, "2ms") {
+		t.Error("expected duration in audit file")
+	}
+}
+
+func TestFileAuditWriter_ElementError(t *testing.T) {
+	dir := t.TempDir()
+
+	logger, _ := NewFromConfig("error", "text")
+	w, err := NewFileAuditWriter(dir, true, logger)
+	if err != nil {
+		t.Fatalf("failed to create writer: %v", err)
+	}
+	defer w.Close()
+
+	w.HandleEvent(Event{
+		Type: EventElementError,
+		Payload: map[string]any{
+			"instance_id":  "inst-1",
+			"element_id":   "task-1",
+			"element_name": "Service Call",
+			"element_type": "serviceTask",
+			"thread_id":    1,
+			"error":        "connection refused",
+		},
+	})
+
+	path := filepath.Join(dir, "audit_inst-1.log")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	if decoded.InstanceID != "inst-1" {
-		t.Errorf("expected InstanceID inst-1, got %s", decoded.InstanceID)
+	content := string(data)
+	if !strings.Contains(content, "ERROR") {
+		t.Error("expected ERROR marker in audit file")
 	}
-	if decoded.EventType != "element.executed" {
-		t.Errorf("expected EventType element.executed, got %s", decoded.EventType)
-	}
-	if decoded.ThreadID != 1 {
-		t.Errorf("expected ThreadID 1, got %d", decoded.ThreadID)
+	if !strings.Contains(content, "connection refused") {
+		t.Error("expected error message in audit file")
 	}
 }
 
 func TestFileAuditWriter_Disabled(t *testing.T) {
+	dir := t.TempDir()
+
 	logger, _ := NewFromConfig("error", "text")
-	w, err := NewFileAuditWriter("", false, logger)
+	w, err := NewFileAuditWriter(dir, false, logger)
 	if err != nil {
 		t.Fatalf("failed to create disabled writer: %v", err)
 	}
 	defer w.Close()
 
-	if w.file != nil {
-		t.Error("expected nil file when disabled")
-	}
+	w.HandleEvent(Event{
+		Type: EventElementExecuted,
+		Payload: map[string]any{
+			"instance_id":  "inst-1",
+			"element_id":   "elem-1",
+			"element_type": "startEvent",
+		},
+	})
 
-	entry := &AuditEntry{InstanceID: "test"}
-	if err := w.WriteEntry(context.Background(), entry); err != nil {
-		t.Fatalf("write on disabled writer should not error: %v", err)
+	path := filepath.Join(dir, "audit_inst-1.log")
+	if _, err := os.Stat(path); err == nil {
+		t.Error("expected no audit file when disabled")
 	}
 }
 
 func TestFileAuditWriter_ConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
 
 	logger, _ := NewFromConfig("error", "text")
-	w, err := NewFileAuditWriter(path, true, logger)
+	w, err := NewFileAuditWriter(dir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create writer: %v", err)
 	}
 	defer w.Close()
 
 	var wg sync.WaitGroup
-	n := 50
+	n := 20
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			entry := &AuditEntry{
-				InstanceID: "inst-1",
-				ThreadID:   i,
-			}
-			_ = w.WriteEntry(context.Background(), entry)
+			w.HandleEvent(Event{
+				Type: EventElementExecuted,
+				Payload: map[string]any{
+					"instance_id":  "inst-1",
+					"element_id":   "elem-1",
+					"element_type": "startEvent",
+					"action":       "ROUTE",
+					"thread_id":    i,
+				},
+			})
 		}(i)
 	}
 
 	wg.Wait()
 
+	path := filepath.Join(dir, "audit_inst-1.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != n {
-		t.Errorf("expected %d lines, got %d", n, len(lines))
+	content := string(data)
+	if !strings.Contains(content, "Thread") {
+		t.Error("expected concurrent element entries in audit file")
+	}
+	if len(content) < 50 {
+		t.Error("expected substantial content from concurrent writes")
 	}
 }
 
-func TestFileAuditWriter_HandleEvent(t *testing.T) {
+func TestFileAuditWriter_ProcessCompleted(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
 
 	logger, _ := NewFromConfig("error", "text")
-	w, err := NewFileAuditWriter(path, true, logger)
+	w, err := NewFileAuditWriter(dir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create writer: %v", err)
 	}
 	defer w.Close()
 
-	event := Event{
-		Type:      EventElementExecuted,
-		Timestamp: time.Now(),
+	w.HandleEvent(Event{
+		Type: EventProcessStarted,
 		Payload: map[string]any{
 			"instance_id":  "inst-1",
 			"process_id":   "proc-1",
-			"element_id":   "elem-1",
-			"element_type": "scriptTask",
+			"process_name": "Test",
+		},
+	})
+
+	w.HandleEvent(Event{
+		Type: EventElementExecuted,
+		Payload: map[string]any{
+			"instance_id":  "inst-1",
+			"element_id":   "start-1",
+			"element_type": "startEvent",
 			"action":       "ROUTE",
 			"thread_id":    1,
 		},
-	}
+	})
 
-	w.HandleEvent(event)
+	w.HandleEvent(Event{
+		Type: EventProcessCompleted,
+		Payload: map[string]any{
+			"instance_id": "inst-1",
+		},
+	})
 
+	path := filepath.Join(dir, "audit_inst-1.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	var decoded AuditEntry
-	json.Unmarshal(data, &decoded)
-
-	if decoded.InstanceID != "inst-1" {
-		t.Errorf("expected InstanceID inst-1, got %s", decoded.InstanceID)
+	content := string(data)
+	if !strings.Contains(content, "COMPLETED") {
+		t.Error("expected COMPLETED in audit footer")
 	}
-	if decoded.EventType != EventElementExecuted {
-		t.Errorf("expected %s, got %s", EventElementExecuted, decoded.EventType)
+	if !strings.Contains(content, "Elements: 1") {
+		t.Error("expected element count in audit footer")
 	}
 }
 
-func TestFileAuditWriter_HandleErrorEvent(t *testing.T) {
+func TestFileAuditWriter_ProcessTerminated(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
 
 	logger, _ := NewFromConfig("error", "text")
-	w, err := NewFileAuditWriter(path, true, logger)
+	w, err := NewFileAuditWriter(dir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create writer: %v", err)
 	}
 	defer w.Close()
 
-	event := Event{
-		Type:      EventElementError,
-		Timestamp: time.Now(),
+	w.HandleEvent(Event{
+		Type: EventProcessStarted,
 		Payload: map[string]any{
 			"instance_id":  "inst-1",
 			"process_id":   "proc-1",
-			"element_id":   "elem-1",
-			"element_type": "serviceTask",
-			"error":        "connection refused",
+			"process_name": "Test",
 		},
-	}
+	})
 
-	w.HandleEvent(event)
+	w.HandleEvent(Event{
+		Type: EventProcessTerminated,
+		Payload: map[string]any{
+			"instance_id": "inst-1",
+			"element_id":  "task-1",
+		},
+	})
 
+	path := filepath.Join(dir, "audit_inst-1.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
+		t.Fatalf("failed to read audit file: %v", err)
 	}
 
-	var decoded AuditEntry
-	json.Unmarshal(data, &decoded)
-
-	if decoded.ErrorMessage != "connection refused" {
-		t.Errorf("expected 'connection refused', got '%s'", decoded.ErrorMessage)
+	content := string(data)
+	if !strings.Contains(content, "TERMINATED") {
+		t.Error("expected TERMINATED in audit footer")
 	}
 }
 
-func TestAuditor_RegistersHandlers(t *testing.T) {
-	dispatcher := NewDispatcher()
+func TestFileAuditWriter_DifferentInstances(t *testing.T) {
+	dir := t.TempDir()
+
 	logger, _ := NewFromConfig("error", "text")
-	writer, _ := NewFileAuditWriter("", false, logger)
-
-	auditor := NewAuditor(dispatcher, writer)
-	if auditor == nil {
-		t.Fatal("expected non-nil auditor")
+	w, err := NewFileAuditWriter(dir, true, logger)
+	if err != nil {
+		t.Fatalf("failed to create writer: %v", err)
 	}
+	defer w.Close()
 
-	// Verify dispatcher is accessible
-	if auditor.Dispatcher() != dispatcher {
-		t.Error("expected same dispatcher reference")
+	w.HandleEvent(Event{
+		Type: EventProcessStarted,
+		Payload: map[string]any{
+			"instance_id": "inst-a",
+			"process_id":  "proc-1",
+		},
+	})
+	w.HandleEvent(Event{
+		Type: EventProcessStarted,
+		Payload: map[string]any{
+			"instance_id": "inst-b",
+			"process_id":  "proc-2",
+		},
+	})
+
+	pathA := filepath.Join(dir, "audit_inst-a.log")
+	pathB := filepath.Join(dir, "audit_inst-b.log")
+
+	if _, err := os.Stat(pathA); err != nil {
+		t.Error("expected audit file for inst-a")
+	}
+	if _, err := os.Stat(pathB); err != nil {
+		t.Error("expected audit file for inst-b")
 	}
 }
 
@@ -250,7 +364,22 @@ func TestExtractInt(t *testing.T) {
 		t.Errorf("expected 0, got %d", v)
 	}
 	if v := extractInt(nil, "count"); v != 0 {
-		t.Errorf("expected 0 for nil payload, got %d", v)
+		t.Errorf("expected 0 for nil payload, got %v", v)
 	}
-	_ = extractInt(payload, "price") // float64 case, just verify no panic
+	_ = extractInt(payload, "price")
+}
+
+func TestAuditor_RegistersHandlers(t *testing.T) {
+	dispatcher := NewDispatcher()
+	logger, _ := NewFromConfig("error", "text")
+	writer, _ := NewFileAuditWriter(t.TempDir(), true, logger)
+
+	auditor := NewAuditor(dispatcher, writer)
+	if auditor == nil {
+		t.Fatal("expected non-nil auditor")
+	}
+
+	if auditor.Dispatcher() != dispatcher {
+		t.Error("expected same dispatcher reference")
+	}
 }

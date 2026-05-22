@@ -43,11 +43,18 @@ type flowElement struct {
 	ScriptType string `xml:"scriptType,attr"`
 	ScriptBody string `xml:"scriptBody,attr"`
 
-	// Flows
+	// Flows / Relationships
 	SourceRef string `xml:"sourceRef,attr"`
 	TargetRef string `xml:"targetRef,attr"`
 	Condition string `xml:"conditionExpression,attr"`
 	IsDefault bool   `xml:"isDefault,attr"`
+
+	// Incoming/Outgoing child elements (used by some BPMN modellers)
+	Incoming []string `xml:"incoming"`
+	Outgoing []string `xml:"outgoing"`
+
+	// Condition expression as child element (used by e.g. Camunda Modeler)
+	ConditionElement string `xml:"conditionExpression"`
 
 	// Extension data
 	ExtensionElements *extensionElements `xml:"extensionElements"`
@@ -126,6 +133,8 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 		case "startEvent", "endEvent", "intermediateCatchEvent",
 			"intermediateThrowEvent", "boundaryEvent":
 			elem := p.parseEvent(fe)
+			elem.Incoming = fe.Incoming
+			elem.Outgoing = fe.Outgoing
 			result.Elements[elem.ID] = elem
 			if fe.XMLName.Local == "startEvent" && result.StartEventID == "" {
 				result.StartEventID = elem.ID
@@ -134,10 +143,14 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 		case "exclusiveGateway", "parallelGateway",
 			"inclusiveGateway", "eventBasedGateway":
 			elem := p.parseGateway(fe)
+			elem.Incoming = fe.Incoming
+			elem.Outgoing = fe.Outgoing
 			result.Elements[elem.ID] = elem
 
-		case "userTask", "scriptTask", "serviceTask":
+		case "userTask", "scriptTask", "serviceTask", "task":
 			elem := p.parseActivity(fe)
+			elem.Incoming = fe.Incoming
+			elem.Outgoing = fe.Outgoing
 			result.Elements[elem.ID] = elem
 
 		case "sequenceFlow":
@@ -271,6 +284,9 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 	case "serviceTask":
 		elem.Type = ElementTypeServiceTask
 		elem.TaskType = TaskTypeService
+	case "task":
+		elem.Type = ElementTypeUserTask
+		elem.TaskType = TaskTypeUser
 	}
 
 	elem.Assignee = fe.Assignee
@@ -292,12 +308,16 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 }
 
 func (p *Parser) parseFlow(fe flowElement) Flow {
+	cond := fe.Condition
+	if cond == "" && fe.ConditionElement != "" {
+		cond = fe.ConditionElement
+	}
 	return Flow{
 		ID:        fe.ID,
 		Name:      fe.Name,
 		SourceRef: fe.SourceRef,
 		TargetRef: fe.TargetRef,
-		Condition: fe.Condition,
+		Condition: cond,
 		IsDefault: fe.IsDefault,
 	}
 }
@@ -311,6 +331,27 @@ func (p *Parser) wireFlows(proc *Process) {
 		if elem, ok := proc.Elements[flow.TargetRef]; ok {
 			elem.IncomingFlows = append(elem.IncomingFlows, flowID)
 			proc.Elements[flow.TargetRef] = elem
+		}
+	}
+
+	// use incoming/outgoing child elements from elements that weren't wired by flows
+	for id, elem := range proc.Elements {
+		if len(elem.IncomingFlows) == 0 && len(elem.OutgoingFlows) == 0 {
+			for _, incoming := range elem.Incoming {
+				if flow, ok := proc.Flows[incoming]; ok {
+					if flow.TargetRef == id {
+						elem.IncomingFlows = append(elem.IncomingFlows, incoming)
+					}
+				}
+			}
+			for _, outgoing := range elem.Outgoing {
+				if flow, ok := proc.Flows[outgoing]; ok {
+					if flow.SourceRef == id {
+						elem.OutgoingFlows = append(elem.OutgoingFlows, outgoing)
+					}
+				}
+			}
+			proc.Elements[id] = elem
 		}
 	}
 }

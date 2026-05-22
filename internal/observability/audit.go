@@ -7,6 +7,7 @@ type AuditEntry struct {
 	InstanceID   string         `json:"instance_id"`
 	ProcessID    string         `json:"process_id"`
 	ElementID    string         `json:"element_id,omitempty"`
+	ElementName  string         `json:"element_name,omitempty"`
 	ElementType  string         `json:"element_type,omitempty"`
 	Action       string         `json:"action,omitempty"`
 	EventType    string         `json:"event_type"`
@@ -20,6 +21,6 @@ type AuditEntry struct {
 }
 
 type AuditConfig struct {
-	Enabled  bool
-	FilePath string
+	Enabled bool
+	Dir     string
 }

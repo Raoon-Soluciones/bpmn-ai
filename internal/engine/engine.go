@@ -57,6 +57,11 @@ func New(cfg Config, registry *ElementRegistry, s store.Store, logger *observabi
 	}
 }
 
+// Registry returns the element registry.
+func (e *Engine) Registry() *ElementRegistry {
+	return e.registry
+}
+
 // WithDispatcher sets the event dispatcher for the engine.
 func (e *Engine) WithDispatcher(d *observability.Dispatcher) *Engine {
 	e.dispatcher = d
@@ -138,14 +143,15 @@ func (e *Engine) Run(ctx context.Context, instance *process.Instance) error {
 		Type:      observability.EventProcessStarted,
 		Timestamp: time.Now(),
 		Payload: map[string]any{
-			"instance_id": instance.ID,
-			"process_id":  instance.ProcessID,
-			"element_id":  instance.Process.StartEventID,
+			"instance_id":  instance.ID,
+			"process_id":   instance.ProcessID,
+			"process_name": instance.Process.Name,
+			"element_id":   instance.Process.StartEventID,
 			"element_type": string(bpmn.ElementTypeStartEvent),
-			"action":      string(ActionRoute),
-			"thread_id":   1,
-			"from_state":  string(process.StateCreated),
-			"to_state":    string(process.StateInProgress),
+			"action":       string(ActionRoute),
+			"thread_id":    1,
+			"from_state":   string(process.StateCreated),
+			"to_state":     string(process.StateInProgress),
 		},
 	})
 
@@ -274,13 +280,15 @@ func (e *Engine) executeElement(ctx context.Context, instance *process.Instance,
 
 	// Emit element executed event
 	payload := map[string]any{
-		"instance_id":  instance.ID,
-		"process_id":   instance.ProcessID,
-		"element_id":   flow.ElementID,
-		"element_type": string(flow.ElementType),
-		"action":       string(result.Action),
-		"thread_id":    threadID,
-		"duration_ms":  result.DurationMs,
+		"instance_id":   instance.ID,
+		"process_id":    instance.ProcessID,
+		"process_name":  instance.Process.Name,
+		"element_id":    flow.ElementID,
+		"element_name":  elemDef.Name,
+		"element_type":  string(flow.ElementType),
+		"action":        string(result.Action),
+		"thread_id":     threadID,
+		"duration_ms":   result.DurationMs,
 	}
 
 	if len(result.FlowFilters) > 0 {

@@ -51,8 +51,8 @@ type LogConfig struct {
 
 // AuditConfig holds audit log configuration.
 type AuditConfig struct {
-	Enabled  bool
-	FilePath string
+	Enabled bool
+	Dir     string
 }
 
 // Default returns a configuration with sensible defaults.
@@ -89,8 +89,8 @@ func Default() Config {
 			Format: "json",
 		},
 		Audit: AuditConfig{
-			Enabled:  parseBoolEnv("AUDIT_LOG_ENABLED", true),
-			FilePath: envOrDefault("AUDIT_LOG_FILE_PATH", "./data/audit.jsonl"),
+			Enabled: parseBoolEnv("AUDIT_LOG_ENABLED", true),
+			Dir:     envOrDefault("AUDIT_LOG_DIR", "./data/audit"),
 		},
 	}
 }
@@ -129,8 +129,8 @@ func (c Config) Validate() error {
 	if c.Engine.ExecutionTimeout < 1*time.Second {
 		return fmt.Errorf("engine execution timeout must be at least 1 second")
 	}
-	if c.Audit.Enabled && c.Audit.FilePath == "" {
-		return fmt.Errorf("audit log file path must not be empty when audit is enabled")
+	if c.Audit.Enabled && c.Audit.Dir == "" {
+		return fmt.Errorf("audit log directory must not be empty when audit is enabled")
 	}
 	return nil
 }

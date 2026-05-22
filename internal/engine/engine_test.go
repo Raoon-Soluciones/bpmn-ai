@@ -2,8 +2,9 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -992,8 +993,8 @@ func TestEngine_Run_AuditLogCreated(t *testing.T) {
 		Name:         "Audit Test",
 		StartEventID: "start-1",
 		Elements: map[string]bpmn.Element{
-			"start-1": {ID: "start-1", Type: bpmn.ElementTypeStartEvent, OutgoingFlows: []string{"flow-1"}},
-			"end-1":   {ID: "end-1", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-1"}},
+			"start-1": {ID: "start-1", Name: "Start", Type: bpmn.ElementTypeStartEvent, OutgoingFlows: []string{"flow-1"}},
+			"end-1":   {ID: "end-1", Name: "End", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-1"}},
 		},
 		Flows: map[string]bpmn.Flow{
 			"flow-1": {ID: "flow-1", SourceRef: "start-1", TargetRef: "end-1"},
@@ -1005,13 +1006,12 @@ func TestEngine_Run_AuditLogCreated(t *testing.T) {
 	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
 
 	auditDir := t.TempDir()
-	auditPath := auditDir + "/audit.jsonl"
 
 	store := memory.NewStore()
 	logger, _ := observability.NewFromConfig("error", "text")
 
 	dispatcher := observability.NewDispatcher()
-	writer, err := observability.NewFileAuditWriter(auditPath, true, logger)
+	writer, err := observability.NewFileAuditWriter(auditDir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create audit writer: %v", err)
 	}
@@ -1037,38 +1037,36 @@ func TestEngine_Run_AuditLogCreated(t *testing.T) {
 		t.Errorf("expected COMPLETED, got %s", instance.State)
 	}
 
-	// Give async dispatch time to flush
-	time.Sleep(200 * time.Millisecond)
-
-	data, err := os.ReadFile(auditPath)
-	if err != nil {
-		t.Fatalf("failed to read audit file: %v", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected at least 2 audit lines, got %d", len(lines))
-	}
-
-	// Find process.started and process.completed entries (async order)
-	foundStarted := false
-	foundCompleted := false
-	for _, line := range lines {
-		var entry observability.AuditEntry
-		if err := json.Unmarshal([]byte(line), &entry); err == nil {
-			switch entry.EventType {
-			case observability.EventProcessStarted:
-				foundStarted = true
-			case observability.EventProcessCompleted:
-				foundCompleted = true
-			}
+	// Wait for all async audit writes to complete
+	auditPath := filepath.Join(auditDir, fmt.Sprintf("audit_%s.log", instance.ID))
+	var content string
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		data, err := os.ReadFile(auditPath)
+		if err != nil {
+			continue
+		}
+		content = string(data)
+		if strings.Contains(content, "BPMN Execution Audit") &&
+			strings.Contains(content, "COMPLETED") {
+			break
 		}
 	}
-	if !foundStarted {
-		t.Error("expected process.started event in audit log")
+
+	if !strings.Contains(content, "BPMN Execution Audit") {
+		t.Error("expected audit header")
 	}
-	if !foundCompleted {
-		t.Error("expected process.completed event in audit log")
+	if !strings.Contains(content, "Audit Test") {
+		t.Error("expected process name in audit log")
+	}
+	if !strings.Contains(content, "start-1") {
+		t.Error("expected start element in audit log")
+	}
+	if !strings.Contains(content, "end-1") {
+		t.Error("expected end element in audit log")
+	}
+	if !strings.Contains(content, "COMPLETED") {
+		t.Error("expected COMPLETED result in audit log")
 	}
 }
 
@@ -1078,10 +1076,10 @@ func TestEngine_Run_AuditParallelBranches(t *testing.T) {
 		Name:         "Audit Parallel",
 		StartEventID: "start-1",
 		Elements: map[string]bpmn.Element{
-			"start-1": {ID: "start-1", Type: bpmn.ElementTypeStartEvent, OutgoingFlows: []string{"flow-1"}},
-			"gw-div":  {ID: "gw-div", Type: bpmn.ElementTypeParallelGateway, IncomingFlows: []string{"flow-1"}, OutgoingFlows: []string{"flow-2a", "flow-2b"}},
-			"end-a":   {ID: "end-a", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-2a"}},
-			"end-b":   {ID: "end-b", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-2b"}},
+			"start-1": {ID: "start-1", Name: "Start", Type: bpmn.ElementTypeStartEvent, OutgoingFlows: []string{"flow-1"}},
+			"gw-div":  {ID: "gw-div", Name: "Split", Type: bpmn.ElementTypeParallelGateway, IncomingFlows: []string{"flow-1"}, OutgoingFlows: []string{"flow-2a", "flow-2b"}},
+			"end-a":   {ID: "end-a", Name: "End A", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-2a"}},
+			"end-b":   {ID: "end-b", Name: "End B", Type: bpmn.ElementTypeEndEvent, IncomingFlows: []string{"flow-2b"}},
 		},
 		Flows: map[string]bpmn.Flow{
 			"flow-1":  {ID: "flow-1", SourceRef: "start-1", TargetRef: "gw-div"},
@@ -1096,13 +1094,12 @@ func TestEngine_Run_AuditParallelBranches(t *testing.T) {
 	registry.Register(bpmn.ElementTypeParallelGateway, gateways.NewParallelGateway)
 
 	auditDir := t.TempDir()
-	auditPath := auditDir + "/audit.jsonl"
 
 	s := memory.NewStore()
 	logger, _ := observability.NewFromConfig("error", "text")
 
 	dispatcher := observability.NewDispatcher()
-	writer, err := observability.NewFileAuditWriter(auditPath, true, logger)
+	writer, err := observability.NewFileAuditWriter(auditDir, true, logger)
 	if err != nil {
 		t.Fatalf("failed to create audit writer: %v", err)
 	}
@@ -1124,31 +1121,32 @@ func TestEngine_Run_AuditParallelBranches(t *testing.T) {
 		t.Fatalf("engine run failed: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	data, err := os.ReadFile(auditPath)
-	if err != nil {
-		t.Fatalf("failed to read audit file: %v", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 4 {
-		t.Fatalf("expected at least 4 audit lines for parallel process, got %d", len(lines))
-	}
-
-	// Verify at least one element.executed has element_type parallelGateway
-	foundParallel := false
-	for _, line := range lines {
-		var entry observability.AuditEntry
-		if err := json.Unmarshal([]byte(line), &entry); err == nil {
-			if entry.ElementType == "parallelGateway" {
-				foundParallel = true
-				break
-			}
+	// Wait for all async audit writes to complete
+	auditPath := filepath.Join(auditDir, fmt.Sprintf("audit_%s.log", instance.ID))
+	var content string
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		data, err := os.ReadFile(auditPath)
+		if err != nil {
+			continue
+		}
+		content = string(data)
+		if strings.Contains(content, "parallelGateway") &&
+			strings.Contains(content, "end-a") &&
+			strings.Contains(content, "end-b") {
+			break
 		}
 	}
-	if !foundParallel {
+
+	if !strings.Contains(content, "parallelGateway") {
 		t.Error("expected at least one audit entry for parallelGateway element")
+	}
+
+	// Verify expected elements appear in the audit
+	for _, elem := range []string{"start-1", "gw-div", "end-a", "end-b"} {
+		if !strings.Contains(content, elem) {
+			t.Errorf("expected element %s in audit log", elem)
+		}
 	}
 }
 
@@ -1171,13 +1169,12 @@ func TestEngine_Run_AuditDisabled(t *testing.T) {
 	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
 
 	auditDir := t.TempDir()
-	auditPath := auditDir + "/audit.jsonl"
 
 	s := memory.NewStore()
 	logger, _ := observability.NewFromConfig("error", "text")
 
 	dispatcher := observability.NewDispatcher()
-	writer, err := observability.NewFileAuditWriter(auditPath, false, logger)
+	writer, err := observability.NewFileAuditWriter(auditDir, false, logger)
 	if err != nil {
 		t.Fatalf("failed to create audit writer: %v", err)
 	}
@@ -1199,8 +1196,9 @@ func TestEngine_Run_AuditDisabled(t *testing.T) {
 		t.Fatalf("engine run failed: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
+	auditPath := filepath.Join(auditDir, fmt.Sprintf("audit_%s.log", instance.ID))
 	if _, err := os.Stat(auditPath); err == nil {
 		data, _ := os.ReadFile(auditPath)
 		if len(strings.TrimSpace(string(data))) > 0 {

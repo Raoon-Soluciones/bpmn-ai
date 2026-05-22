@@ -1,97 +1,392 @@
 package observability
 
 import (
-	"context"
-	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
-type FileAuditWriter struct {
-	file    *os.File
-	mu      sync.Mutex
-	logger  *Logger
-	enabled bool
+const auditFilePattern = "audit_%s.log"
+
+type instanceAuditState struct {
+	mu           sync.Mutex
+	step         int
+	elementCount int
+	startTime    time.Time
+	processName  string
+	processID    string
+	file         *os.File
 }
 
-func NewFileAuditWriter(path string, enabled bool, logger *Logger) (*FileAuditWriter, error) {
-	if !enabled {
-		return &FileAuditWriter{enabled: false, logger: logger}, nil
-	}
+type FileAuditWriter struct {
+	dir       string
+	enabled   bool
+	logger    *Logger
+	instances map[string]*instanceAuditState
+	wmu       sync.Mutex
+}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
+func NewFileAuditWriter(dir string, enabled bool, logger *Logger) (*FileAuditWriter, error) {
+	if enabled {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create audit dir: %w", err)
+		}
 	}
-
 	return &FileAuditWriter{
-		file:    f,
-		enabled: true,
-		logger:  logger,
+		dir:       dir,
+		enabled:   enabled,
+		logger:    logger,
+		instances: make(map[string]*instanceAuditState),
 	}, nil
 }
 
-func (w *FileAuditWriter) WriteEntry(ctx context.Context, entry *AuditEntry) error {
-	if !w.enabled || w.file == nil {
-		return nil
+func (w *FileAuditWriter) getOrCreateState(instanceID string) *instanceAuditState {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
+	st, ok := w.instances[instanceID]
+	if ok && st.file != nil {
+		return st
 	}
-
-	entry.ID = uuid.New().String()
-	entry.Timestamp = time.Now()
-
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
+	if ok && st.file == nil {
+		path := filepath.Join(w.dir, fmt.Sprintf(auditFilePattern, instanceID))
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			st.file = f
+		}
+		return st
 	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if _, err := w.file.Write(data); err != nil {
-		return err
+	path := filepath.Join(w.dir, fmt.Sprintf(auditFilePattern, instanceID))
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		st = &instanceAuditState{file: f}
+	} else {
+		st = &instanceAuditState{}
+		if w.logger != nil {
+			w.logger.Error("audit: failed to open file", "error", err, "instance", instanceID)
+		}
 	}
-	if _, err := w.file.Write([]byte("\n")); err != nil {
-		return err
+	w.instances[instanceID] = st
+	return st
+}
+
+func (w *FileAuditWriter) getState(instanceID string) *instanceAuditState {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
+	return w.instances[instanceID]
+}
+
+func (w *FileAuditWriter) removeState(instanceID string) {
+	w.wmu.Lock()
+	st, ok := w.instances[instanceID]
+	if ok {
+		if st.file != nil {
+			st.file.Close()
+		}
+		delete(w.instances, instanceID)
 	}
-	return nil
+	w.wmu.Unlock()
+}
+
+func (w *FileAuditWriter) writeToState(instanceID string, text string) {
+	if !w.enabled {
+		return
+	}
+	st := w.getOrCreateState(instanceID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w.ensureFileOpen(st, instanceID)
+	if st.file != nil {
+		writeFile(st.file, text)
+	}
+}
+
+func writeFile(f *os.File, s string) {
+	f.WriteString(s)
+	f.Sync()
 }
 
 func (w *FileAuditWriter) HandleEvent(event Event) {
-	entry := &AuditEntry{
-		InstanceID:  extractString(event.Payload, "instance_id"),
-		ProcessID:   extractString(event.Payload, "process_id"),
-		ElementID:   extractString(event.Payload, "element_id"),
-		ElementType: extractString(event.Payload, "element_type"),
-		Action:      extractString(event.Payload, "action"),
-		EventType:   event.Type,
-		ThreadID:    extractInt(event.Payload, "thread_id"),
-		FromState:   extractString(event.Payload, "from_state"),
-		ToState:     extractString(event.Payload, "to_state"),
-		ErrorMessage: extractString(event.Payload, "error"),
-		Payload:     event.Payload,
+	if !w.enabled {
+		return
+	}
+	instanceID := extractString(event.Payload, "instance_id")
+	if instanceID == "" {
+		return
 	}
 
-	if pi, ok := event.Payload["parent_index"]; ok {
-		if v, ok := pi.(int); ok {
-			entry.ParentIndex = &v
-		}
-	}
-
-	if err := w.WriteEntry(context.Background(), entry); err != nil {
-		if w.logger != nil {
-			w.logger.Error("failed to write audit entry", "error", err, "event_type", event.Type)
-		}
+	switch event.Type {
+	case EventProcessStarted:
+		w.handleProcessStarted(instanceID, event.Payload)
+	case EventElementExecuted:
+		w.handleElementExecuted(instanceID, event.Payload)
+	case EventElementError:
+		w.handleElementError(instanceID, event.Payload)
+	case EventProcessCompleted:
+		w.handleProcessCompleted(instanceID, event.Payload, "COMPLETED")
+	case EventProcessTerminated:
+		w.handleProcessTerminated(instanceID, event.Payload)
+	case EventProcessError:
+		w.handleProcessError(instanceID, event.Payload)
+	case EventTaskClaimed:
+		w.handleTaskClaimed(instanceID, event.Payload)
+	case EventTaskCompleted:
+		w.handleTaskCompleted(instanceID, event.Payload)
 	}
 }
 
-func (w *FileAuditWriter) Close() error {
-	if w.file != nil {
-		return w.file.Close()
+func (w *FileAuditWriter) handleProcessStarted(instanceID string, payload map[string]any) {
+	st := w.getOrCreateState(instanceID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.startTime = time.Now()
+	st.processID = extractString(payload, "process_id")
+	st.processName = extractString(payload, "process_name")
+
+	var b strings.Builder
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString(" BPMN Execution Audit\n")
+	b.WriteString(fmt.Sprintf(" Process:   %s (%s)\n", st.processName, st.processID))
+	b.WriteString(fmt.Sprintf(" Instance:  %s\n", instanceID))
+	b.WriteString(fmt.Sprintf(" Started:   %s\n", st.startTime.Format("2006-01-02 15:04:05.000")))
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	writeFile(st.file, b.String())
+}
+
+func (w *FileAuditWriter) ensureFileOpen(st *instanceAuditState, instanceID string) {
+	if st.file != nil {
+		return
 	}
+	path := filepath.Join(w.dir, fmt.Sprintf(auditFilePattern, instanceID))
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		st.file = f
+	}
+}
+
+func (w *FileAuditWriter) handleElementExecuted(instanceID string, payload map[string]any) {
+	st := w.getOrCreateState(instanceID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w.ensureFileOpen(st, instanceID)
+	st.step++
+	st.elementCount++
+
+	elemID := extractString(payload, "element_id")
+	elemName := extractString(payload, "element_name")
+	elemType := extractString(payload, "element_type")
+	action := extractString(payload, "action")
+	threadID := extractInt(payload, "thread_id")
+	duration := extractInt(payload, "duration_ms")
+	fromState := extractString(payload, "from_state")
+	toState := extractString(payload, "to_state")
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  %d.  Thread %d  │  %s", st.step, threadID, elemID))
+	if elemName != "" {
+		b.WriteString(fmt.Sprintf(" \"%s\"", elemName))
+	}
+	b.WriteString(fmt.Sprintf("  │  %s\n", elemType))
+	b.WriteString(fmt.Sprintf("      %s", action))
+	if duration > 0 {
+		b.WriteString(fmt.Sprintf("  ·  %dms", duration))
+	}
+	b.WriteString("\n")
+
+	if flowFilters, ok := payload["flow_filters"]; ok {
+		if filters, ok := flowFilters.([]any); ok {
+			for _, f := range filters {
+				if m, ok := f.(map[string]any); ok {
+					target := extractString(m, "target_ref")
+					if target != "" {
+						b.WriteString(fmt.Sprintf("      Flow: → %s\n", target))
+					}
+				}
+			}
+		}
+	}
+
+	if fromState != "" && toState != "" {
+		b.WriteString(fmt.Sprintf("      State: %s → %s\n", fromState, toState))
+	}
+
+	if st.file != nil {
+		writeFile(st.file, b.String())
+	}
+}
+
+func (w *FileAuditWriter) handleElementError(instanceID string, payload map[string]any) {
+	st := w.getOrCreateState(instanceID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w.ensureFileOpen(st, instanceID)
+	st.step++
+	st.elementCount++
+
+	elemID := extractString(payload, "element_id")
+	elemName := extractString(payload, "element_name")
+	elemType := extractString(payload, "element_type")
+	errMsg := extractString(payload, "error")
+	threadID := extractInt(payload, "thread_id")
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  %d.  Thread %d  │  %s", st.step, threadID, elemID))
+	if elemName != "" {
+		b.WriteString(fmt.Sprintf(" \"%s\"", elemName))
+	}
+	b.WriteString(fmt.Sprintf("  │  %s\n", elemType))
+	b.WriteString("      ⛔ ERROR\n")
+	if errMsg != "" {
+		b.WriteString(fmt.Sprintf("      Error: %s\n", errMsg))
+	}
+
+	if st.file != nil {
+		writeFile(st.file, b.String())
+	}
+}
+
+func (w *FileAuditWriter) handleProcessCompleted(instanceID string, payload map[string]any, status string) {
+	st := w.getState(instanceID)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+
+	elapsed := time.Since(st.startTime)
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString(fmt.Sprintf(" Result: %s\n", status))
+	b.WriteString(fmt.Sprintf(" Duration: %s\n", formatDuration(elapsed)))
+	b.WriteString(fmt.Sprintf(" Elements: %d\n", st.elementCount))
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	if st.file != nil {
+		writeFile(st.file, b.String())
+		st.file.Close()
+		st.file = nil
+	}
+	st.mu.Unlock()
+}
+
+func (w *FileAuditWriter) handleProcessTerminated(instanceID string, payload map[string]any) {
+	st := w.getState(instanceID)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+
+	elapsed := time.Since(st.startTime)
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString(fmt.Sprintf(" Result: TERMINATED\n"))
+	if elemID := extractString(payload, "element_id"); elemID != "" {
+		b.WriteString(fmt.Sprintf("  Stopped at: %s\n", elemID))
+	}
+	b.WriteString(fmt.Sprintf(" Duration: %s\n", formatDuration(elapsed)))
+	b.WriteString(fmt.Sprintf(" Elements: %d\n", st.elementCount))
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	if st.file != nil {
+		writeFile(st.file, b.String())
+		st.file.Close()
+		st.file = nil
+	}
+	st.mu.Unlock()
+}
+
+func (w *FileAuditWriter) handleProcessError(instanceID string, payload map[string]any) {
+	st := w.getState(instanceID)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+
+	elapsed := time.Since(st.startTime)
+	errMsg := extractString(payload, "error")
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString(" Result: ERROR\n")
+	if errMsg != "" {
+		b.WriteString(fmt.Sprintf(" Error: %s\n", errMsg))
+	}
+	b.WriteString(fmt.Sprintf(" Duration: %s\n", formatDuration(elapsed)))
+	b.WriteString(fmt.Sprintf(" Elements: %d\n", st.elementCount))
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	if st.file != nil {
+		writeFile(st.file, b.String())
+		st.file.Close()
+		st.file = nil
+	}
+	st.mu.Unlock()
+}
+
+func (w *FileAuditWriter) handleTaskClaimed(instanceID string, payload map[string]any) {
+	elemID := extractString(payload, "element_id")
+	elemName := extractString(payload, "element_name")
+	threadID := extractInt(payload, "thread_id")
+	assignee := extractString(payload, "assignee")
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("\n  •  Task claimed: %s", elemID))
+	if elemName != "" {
+		b.WriteString(fmt.Sprintf(" \"%s\"", elemName))
+	}
+	if assignee != "" {
+		b.WriteString(fmt.Sprintf(" by %s", assignee))
+	}
+	b.WriteString(fmt.Sprintf("  (Thread %d)\n", threadID))
+
+	w.writeToState(instanceID, b.String())
+}
+
+func (w *FileAuditWriter) handleTaskCompleted(instanceID string, payload map[string]any) {
+	elemID := extractString(payload, "element_id")
+	elemName := extractString(payload, "element_name")
+	threadID := extractInt(payload, "thread_id")
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("\n  •  Task completed: %s", elemID))
+	if elemName != "" {
+		b.WriteString(fmt.Sprintf(" \"%s\"", elemName))
+	}
+	b.WriteString(fmt.Sprintf("  (Thread %d)\n", threadID))
+
+	w.writeToState(instanceID, b.String())
+}
+
+func (w *FileAuditWriter) Close() error {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
+	for _, st := range w.instances {
+		if st.file != nil {
+			st.file.Close()
+		}
+	}
+	w.instances = make(map[string]*instanceAuditState)
 	return nil
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.2fs", d.Seconds())
+	}
+	return d.Round(time.Second).String()
 }
 
 func extractString(payload map[string]any, key string) string {

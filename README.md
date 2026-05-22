@@ -335,7 +335,7 @@ log:
 
 audit:
   enabled: true
-  file_path: ./data/audit.jsonl
+  dir: ./data/audit
 ```
 
 ### Environment Variables
@@ -344,7 +344,7 @@ audit:
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgres://...` | PostgreSQL connection string |
 | `AUDIT_LOG_ENABLED` | `true` | Enable/disable audit logging |
-| `AUDIT_LOG_FILE_PATH` | `./data/audit.jsonl` | Path to audit log JSON Lines file |
+| `AUDIT_LOG_DIR` | `./data/audit` | Directory for per-instance audit log files |
 
 ---
 
@@ -418,50 +418,60 @@ Events can be consumed synchronously or asynchronously via the `Dispatcher`.
 
 ### Audit Log
 
-The engine also writes a structured audit log to a JSON Lines (`.jsonl`) file. Every event emitted by the dispatcher is recorded as a single JSON line, capturing the full execution context:
+The engine writes a human-readable audit log to one file per process instance inside the configured directory. Each file traces every BPMN element executed, showing the execution path, thread branches, durations, and results.
 
-| Field | Description |
-|-------|-------------|
-| `id` | Unique entry identifier |
-| `instance_id` | Process instance ID |
-| `process_id` | Process definition ID |
-| `element_id` | Element ID (if applicable) |
-| `element_type` | Element type (e.g. `startEvent`, `exclusiveGateway`) |
-| `action` | Execution action (e.g. `ROUTE`, `WAIT`, `ERROR`) |
-| `event_type` | Event type (e.g. `element.executed`, `process.completed`) |
-| `timestamp` | ISO 8601 timestamp |
-| `thread_id` | Execution thread ID |
-| `parent_index` | Parent thread index (parallel branches) |
-| `from_state` | Previous instance state |
-| `to_state` | New instance state |
-| `error_message` | Error details (if applicable) |
-| `payload` | Additional context (variables, gateway decisions, etc.) |
+**Sample output (`audit_<instance_id>.log`):**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ BPMN Execution Audit
+ Process:   Audit Parallel (proc-audit-par)
+ Instance:  550e8400-e29b-41d4-a716-446655440000
+ Started:   2026-05-20 10:30:00.123
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1.  Thread 1  │  start-1 "Start"  │  startEvent
+      ROUTE  ·  2ms
+
+  2.  Thread 1  │  gw-div "Split"  │  parallelGateway
+      ROUTE  ·  1ms
+      Branches: → end-a, → end-b
+
+  3.  Thread 11  │  end-a "End A"  │  endEvent
+      COMPLETE  ·  1ms
+
+  4.  Thread 12  │  end-b "End B"  │  endEvent
+      COMPLETE  ·  1ms
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Result: COMPLETED
+ Duration: 45ms
+ Elements: 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
 
 **Configuration via `.env` file:**
 
 ```bash
 # .env
 AUDIT_LOG_ENABLED=true
-AUDIT_LOG_FILE_PATH=./data/audit.jsonl
+AUDIT_LOG_DIR=./data/audit
 ```
 
-**Inspecting the audit log:**
+**Inspecting audit logs:**
 
 ```bash
-# Tail live
-tail -f ./data/audit.jsonl
+# List all audit files
+ls ./data/audit/
 
-# Filter by event type
-jq 'select(.event_type=="element.executed")' ./data/audit.jsonl
+# Tail a specific instance
+tail -f ./data/audit/audit_<instance_id>.log
 
-# Filter by element type
-jq 'select(.element_type=="exclusiveGateway")' ./data/audit.jsonl
-
-# Extract all instance IDs
-jq -r '.instance_id' ./data/audit.jsonl | sort -u
+# Search across all audit files
+grep "ERROR" ./data/audit/*.log
 ```
 
-The audit log is additive — the existing `ExecutionLogEntry` is preserved. When audit is disabled (`AUDIT_LOG_ENABLED=false`), events are still dispatched but no entries are written to the file.
+The audit log is additive — the existing `ExecutionLogEntry` is preserved. When audit is disabled (`AUDIT_LOG_ENABLED=false`), events are still dispatched but no entries are written to files.
 
 ---
 
@@ -753,7 +763,7 @@ func main() {
     })
 
     dispatcher := observability.NewDispatcher()
-    writer, _ := observability.NewFileAuditWriter("./data/audit.jsonl", true, logger)
+    writer, _ := observability.NewFileAuditWriter("./data/audit", true, logger)
     defer writer.Close()
     observability.NewAuditor(dispatcher, writer)
     q.WithDispatcher(dispatcher)

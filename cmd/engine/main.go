@@ -34,7 +34,7 @@ func main() {
 	store := memory.NewStore()
 
 	dispatcher := observability.NewDispatcher()
-	auditWriter, err := observability.NewFileAuditWriter(cfg.Audit.FilePath, cfg.Audit.Enabled, logger)
+	auditWriter, err := observability.NewFileAuditWriter(cfg.Audit.Dir, cfg.Audit.Enabled, logger)
 	if err != nil {
 		logger.Error("failed to create audit writer", "error", err)
 		os.Exit(1)
