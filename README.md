@@ -4,6 +4,8 @@
 
 > Standalone BPMN 2.0 execution engine written in Go. High-performance, production-ready.
 
+📖 **[Read the full documentation →](docs/bpmn-and-bpmn-ai.md)** — BPMN concepts, engine architecture, and implementation scope.
+
 ## Quick Start
 
 ### Run in 30 seconds

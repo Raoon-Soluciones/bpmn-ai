@@ -4,6 +4,8 @@
 
 > Motor de ejecución BPMN 2.0 independiente escrito en Go. Alto rendimiento, listo para producción.
 
+📖 **[Leer la documentación completa →](docs/bpmn-y-bpmn-ai.md)** — Conceptos BPMN, arquitectura del motor y alcance de implementación.
+
 ## Inicio Rápido
 
 ### Ejecutar en 30 segundos
