@@ -48,27 +48,10 @@ func (w *FileAuditWriter) getOrCreateState(instanceID string) *instanceAuditStat
 	w.wmu.Lock()
 	defer w.wmu.Unlock()
 	st, ok := w.instances[instanceID]
-	if ok && st.file != nil {
+	if ok {
 		return st
 	}
-	if ok && st.file == nil {
-		path := filepath.Join(w.dir, fmt.Sprintf(auditFilePattern, instanceID))
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			st.file = f
-		}
-		return st
-	}
-	path := filepath.Join(w.dir, fmt.Sprintf(auditFilePattern, instanceID))
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		st = &instanceAuditState{file: f}
-	} else {
-		st = &instanceAuditState{}
-		if w.logger != nil {
-			w.logger.Error("audit: failed to open file", "error", err, "instance", instanceID)
-		}
-	}
+	st = &instanceAuditState{}
 	w.instances[instanceID] = st
 	return st
 }
@@ -83,9 +66,11 @@ func (w *FileAuditWriter) removeState(instanceID string) {
 	w.wmu.Lock()
 	st, ok := w.instances[instanceID]
 	if ok {
+		st.mu.Lock()
 		if st.file != nil {
 			st.file.Close()
 		}
+		st.mu.Unlock()
 		delete(w.instances, instanceID)
 	}
 	w.wmu.Unlock()
@@ -147,6 +132,7 @@ func (w *FileAuditWriter) handleProcessStarted(instanceID string, payload map[st
 	st := w.getOrCreateState(instanceID)
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	w.ensureFileOpen(st, instanceID)
 
 	st.startTime = time.Now()
 	st.processID = extractString(payload, "process_id")
