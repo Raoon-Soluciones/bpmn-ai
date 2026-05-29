@@ -88,8 +88,15 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 - XXE-safe XML parser
 - BPMN condition expression evaluation (govaluate)
 - Converging ParallelGateway (waits for all incoming branches)
+- SequenceFlow as executable element — factory populates from ExtensionData, router routes through flow elements
+- ScriptTask with real script execution — business_rule, change_field, assign_team, assign_user, add_related script types
+- TimerEvent with ISO 8601 duration & cron parsing — ContinueAt field schedules auto-continue via job queue
+- MessageCatch with message correlation — `POST /api/v1/messages` endpoint, flow lookup by instanceID + MessageRef
+- EventBasedGateway with armed/resolved tracking — first event wins, subsequent branches silently drop
+- GatewayDirection — parsed from XML and used in divergence/convergence logic of all gateways
+- Parser fix — intermediateCatchEvent/boundaryEvent now map to correct element type based on event definition
 - Race-detector clean throughout
-- 110+ tests, all passing
+- 100+ tests, all passing
 
 ---
 
@@ -332,6 +339,7 @@ PENDING ──→ RUNNING ──→ COMPLETED
 | GET | `/api/v1/cases/{id}/tasks` | Pending tasks |
 | POST | `/api/v1/tasks/{id}/claim` | Claim task |
 | POST | `/api/v1/tasks/{id}/complete` | Complete task |
+| POST | `/api/v1/messages` | Send message to waiting MessageCatch instance |
 | GET | `/api/v1/cases/{id}/history` | Execution history |
 | GET | `/api/v1/cases/{id}/diagram` | Process diagram |
 
@@ -577,7 +585,12 @@ bpmn-ai/
 │   ├── simple_sequence.bpmn
 │   ├── parallel_gateway.bpmn
 │   ├── exclusive_gateway.bpmn
+│   ├── inclusive_gateway.bpmn
+│   ├── event_based_gateway.bpmn
 │   ├── timer_event.bpmn
+│   ├── message_catch.bpmn
+│   ├── script_task.bpmn
+│   ├── service_task.bpmn
 │   └── complex_process.bpmn
 ├── Dockerfile                     # Multi-stage build (~15MB)
 ├── docker-compose.yml             # Engine + PostgreSQL

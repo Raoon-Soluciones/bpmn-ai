@@ -408,6 +408,52 @@ func (s *Server) completeTask(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type sendMessageRequest struct {
+	InstanceID string         `json:"instance_id"`
+	MessageRef string         `json:"message_ref"`
+	Variables  map[string]any `json:"variables,omitempty"`
+}
+
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	var req sendMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.InstanceID == "" || !isValidUUID(req.InstanceID) {
+		writeError(w, http.StatusBadRequest, "valid instance_id is required")
+		return
+	}
+	if req.MessageRef == "" {
+		writeError(w, http.StatusBadRequest, "message_ref is required")
+		return
+	}
+	if len(req.Variables) > 100 {
+		writeError(w, http.StatusBadRequest, "too many variables (max 100)")
+		return
+	}
+
+	if s.engine != nil {
+		go func() {
+			execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.engine.SendMessage(execCtx, req.InstanceID, req.MessageRef, req.Variables); err != nil {
+				s.logger.Error("message delivery failed", "error", err, "instance_id", req.InstanceID, "message_ref", req.MessageRef)
+			}
+		}()
+	}
+
+	s.logger.Info("message sent", "instance_id", req.InstanceID, "message_ref", req.MessageRef)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"instance_id": req.InstanceID,
+		"message_ref": req.MessageRef,
+		"status":      "delivered",
+	})
+}
+
 func (s *Server) getCSRFToken(w http.ResponseWriter, r *http.Request) {
 	token, err := middleware.GenerateCSRFToken()
 	if err != nil {

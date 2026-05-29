@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
@@ -34,11 +35,17 @@ type Engine interface {
 	// Continue resumes execution after a task is completed.
 	Continue(ctx context.Context, instanceID string, completedFlowID string, variables map[string]any) error
 
+	// SendMessage delivers a message to a waiting MessageCatch event.
+	SendMessage(ctx context.Context, instanceID string, messageRef string, variables map[string]any) error
+
 	// Registry returns the element registry.
 	Registry() *ElementRegistry
 
 	// WithDispatcher sets the event dispatcher.
 	WithDispatcher(d *observability.Dispatcher) Engine
+
+	// JobHandler returns the queue job handler for engine-managed jobs.
+	JobHandler() queue.JobHandler
 }
 
 // engine is the BPMN execution engine with an iterative loop.
@@ -179,6 +186,15 @@ func (e *engine) Continue(ctx context.Context, instanceID string, completedFlowI
 		return fmt.Errorf("get completed flow: %w", err)
 	}
 
+	// Check EventBasedGateway resolution — only the first event branch proceeds
+	if !gateways.CheckAndResolve(execCtxForGateway(instance), flow.ElementID) {
+		e.logger.Info("event-based gateway branch skipped (already resolved)",
+			"instance_id", instanceID,
+			"element_id", flow.ElementID,
+		)
+		return e.finalizeInstance(ctx, instance)
+	}
+
 	result := element.ExecutionResult{
 		Action:   element.ActionRoute,
 		FlowData: flow,
@@ -202,6 +218,46 @@ func (e *engine) Continue(ctx context.Context, instanceID string, completedFlowI
 	}
 
 	return e.runLoop(ctx, instance, initialItems)
+}
+
+// SendMessage delivers a message to a waiting MessageCatch event and resumes the process.
+func (e *engine) SendMessage(ctx context.Context, instanceID string, messageRef string, variables map[string]any) error {
+	instRec, err := e.store.GetInstance(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+
+	proc, err := e.store.GetProcess(ctx, instRec.ProcessID)
+	if err != nil {
+		return fmt.Errorf("get process: %w", err)
+	}
+
+	flows, err := e.store.GetFlowsByInstance(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("get instance flows: %w", err)
+	}
+
+	// Find the waiting flow whose element is a MessageCatch expecting this messageRef
+	for _, f := range flows {
+		if f.Status != store.FlowStatusActive {
+			continue
+		}
+		elem, ok := proc.Elements[f.ElementID]
+		if !ok || elem.Type != bpmn.ElementTypeMessageCatch {
+			continue
+		}
+		if elem.EventDefinition.MessageRef == messageRef {
+			f.Status = store.FlowStatusCompleted
+			now := time.Now()
+			f.FinishedAt = &now
+			if err := e.store.UpdateFlow(ctx, f); err != nil {
+				return fmt.Errorf("update flow: %w", err)
+			}
+			return e.Continue(ctx, instanceID, f.ID, variables)
+		}
+	}
+
+	return fmt.Errorf("no waiting MessageCatch found for messageRef %s in instance %s", messageRef, instanceID)
 }
 
 // runLoop executes the engine worker pool and processes results.
@@ -475,6 +531,39 @@ func (e *engine) handleResult(
 		if err := instance.Transition(process.StateWaiting); err != nil {
 			return fmt.Errorf("transition to waiting: %w", err)
 		}
+
+		// Schedule auto-continue if the element specified a continuation time (e.g., TimerEvent)
+		if result.ContinueAt != nil && !result.ContinueAt.IsZero() {
+			job := &store.JobRecord{
+				InstanceID:  instance.ID,
+				FlowID:      result.FlowData.ID,
+				Type:        "timer_continue",
+				ScheduledAt: *result.ContinueAt,
+				Payload: map[string]any{
+					"element_id":  result.FlowData.ElementID,
+					"instance_id": instance.ID,
+					"flow_id":     result.FlowData.ID,
+				},
+			}
+			if e.queue != nil {
+				if err := e.queue.Enqueue(ctx, job); err != nil {
+					e.logger.Error("failed to enqueue timer continuation job", "error", err)
+				}
+			} else {
+				_ = e.store.CreateJob(ctx, job)
+			}
+			e.dispatcher.DispatchAsync(observability.Event{
+				Type:      observability.EventJobQueued,
+				Timestamp: time.Now(),
+				Payload: map[string]any{
+					"instance_id": instance.ID,
+					"element_id":  result.FlowData.ElementID,
+					"job_id":      job.ID,
+					"job_type":    "timer_continue",
+				},
+			})
+		}
+
 		e.dispatcher.DispatchAsync(observability.Event{
 			Type:      observability.EventProcessCompleted,
 			Timestamp: time.Now(),
@@ -613,10 +702,40 @@ func (e *engine) finalizeInstance(ctx context.Context, instance *process.Instanc
 	return e.store.UpdateInstance(ctx, instance.ToRecord())
 }
 
+// execCtxForGateway creates a minimal execution context for gateway checks.
+func execCtxForGateway(inst *process.Instance) element.ExecutionContext {
+	return &gatewayExecCtx{instance: inst}
+}
+
+type gatewayExecCtx struct {
+	instance *process.Instance
+}
+
+func (c *gatewayExecCtx) Instance() element.Instance       { return c.instance }
+func (c *gatewayExecCtx) Flow() *store.FlowRecord           { return nil }
+func (c *gatewayExecCtx) GetVariable(key string) (any, bool) { return c.instance.GetVariable(key) }
+func (c *gatewayExecCtx) SetVariable(key string, value any)  { c.instance.SetVariable(key, value) }
+func (c *gatewayExecCtx) Store() element.ElementStore        { return nil }
+func (c *gatewayExecCtx) Element() (bpmn.Element, bool)      { return bpmn.Element{}, false }
+
 func isEndEvent(elementID string, proc *bpmn.Process) bool {
 	elem, ok := proc.Elements[elementID]
 	if !ok {
 		return false
 	}
 	return elem.Type == bpmn.ElementTypeEndEvent || elem.Type == bpmn.ElementTypeTerminateEvent
+}
+
+// JobHandler returns the queue job handler that processes engine-managed jobs
+// (e.g., timer_continue for scheduled TimerEvent resumption).
+func (e *engine) JobHandler() queue.JobHandler {
+	return func(ctx context.Context, job *store.JobRecord) error {
+		switch job.Type {
+		case "timer_continue":
+			return e.Continue(ctx, job.InstanceID, job.FlowID, nil)
+		default:
+			e.logger.Info("unknown job type in engine handler", "type", job.Type)
+			return nil
+		}
+	}
 }

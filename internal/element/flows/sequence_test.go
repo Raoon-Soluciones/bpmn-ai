@@ -39,6 +39,10 @@ func TestSequenceFlow_Execute(t *testing.T) {
 	elem := bpmn.Element{
 		ID:   "flow-1",
 		Name: "Default Flow",
+		ExtensionData: map[string]string{
+			"sourceRef": "start-1",
+			"targetRef": "end-1",
+		},
 	}
 	f, err := NewSequenceFlow(elem)
 	if err != nil {
@@ -61,21 +65,30 @@ func TestSequenceFlow_Execute(t *testing.T) {
 	}
 }
 
-func TestSequenceFlow_Interfaces(t *testing.T) {
-	elem := bpmn.Element{ID: "flow-1"}
+func TestSequenceFlow_Fields(t *testing.T) {
+	elem := bpmn.Element{
+		ID:   "flow-1",
+		Name: "Cond Flow",
+		ExtensionData: map[string]string{
+			"sourceRef":           "gw-1",
+			"targetRef":           "task-1",
+			"conditionExpression": "${amount > 100}",
+			"isDefault":           "true",
+		},
+	}
 	raw, _ := NewSequenceFlow(elem)
 	f := raw.(*SequenceFlow)
 
-	if f.SourceRef() != "" {
-		t.Errorf("expected empty source ref, got %s", f.SourceRef())
+	if f.SourceRef() != "gw-1" {
+		t.Errorf("expected sourceRef 'gw-1', got %s", f.SourceRef())
 	}
-	if f.TargetRef() != "" {
-		t.Errorf("expected empty target ref, got %s", f.TargetRef())
+	if f.TargetRef() != "task-1" {
+		t.Errorf("expected targetRef 'task-1', got %s", f.TargetRef())
 	}
-	if f.Condition() != "" {
-		t.Errorf("expected empty condition, got %s", f.Condition())
+	if f.Condition() != "${amount > 100}" {
+		t.Errorf("expected condition '${amount > 100}', got %s", f.Condition())
 	}
-	if f.IsDefault() {
-		t.Error("expected IsDefault to be false")
+	if !f.IsDefault() {
+		t.Error("expected IsDefault to be true")
 	}
 }

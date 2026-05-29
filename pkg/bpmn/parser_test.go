@@ -51,11 +51,11 @@ func TestParser_Parse_SimpleSequence(t *testing.T) {
 	if proc.StartEventID != "start-1" {
 		t.Errorf("expected start event start-1, got %s", proc.StartEventID)
 	}
-	if len(proc.Elements) != 2 {
-		t.Errorf("expected 2 elements, got %d", len(proc.Elements))
+	if len(proc.Elements) != 3 {
+		t.Errorf("expected 3 elements (start, end, flow), got %d", len(proc.Elements))
 	}
-	if len(proc.Flows) != 1 {
-		t.Errorf("expected 1 flow, got %d", len(proc.Flows))
+	if len(proc.Flows) != 2 {
+		t.Errorf("expected 2 flows (1 real + 1 synthetic), got %d", len(proc.Flows))
 	}
 
 	start := proc.Elements["start-1"]

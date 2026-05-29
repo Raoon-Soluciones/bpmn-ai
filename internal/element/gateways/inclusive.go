@@ -10,11 +10,12 @@ import (
 )
 
 type InclusiveGateway struct {
-	id            string
-	name          string
-	gatewayType   bpmn.GatewayType
-	defaultFlowID string
-	conditions    map[string]string
+	id               string
+	name             string
+	gatewayType      bpmn.GatewayType
+	gatewayDirection bpmn.GatewayDirection
+	defaultFlowID    string
+	conditions       map[string]string
 }
 
 func NewInclusiveGateway(elem bpmn.Element) (element.Element, error) {
@@ -23,11 +24,12 @@ func NewInclusiveGateway(elem bpmn.Element) (element.Element, error) {
 		conds[k] = v
 	}
 	return &InclusiveGateway{
-		id:            elem.ID,
-		name:          elem.Name,
-		gatewayType:   elem.GatewayType,
-		defaultFlowID: elem.DefaultFlowID,
-		conditions:    conds,
+		id:               elem.ID,
+		name:             elem.Name,
+		gatewayType:      elem.GatewayType,
+		gatewayDirection: elem.GatewayDirection,
+		defaultFlowID:    elem.DefaultFlowID,
+		conditions:       conds,
 	}, nil
 }
 
@@ -54,6 +56,15 @@ func (g *InclusiveGateway) Execute(_ context.Context, execCtx element.ExecutionC
 
 	outgoing := elem.OutgoingFlows
 
+	// Converging: just pass through (inclusive gateway convergence is implicit)
+	if g.gatewayDirection == bpmn.GatewayDirectionConverging {
+		return element.ExecutionResult{
+			Action:   element.ActionRoute,
+			FlowData: flow,
+		}
+	}
+
+	// Diverging or unset: evaluate conditions on each outgoing
 	if len(outgoing) <= 1 {
 		return element.ExecutionResult{
 			Action:   element.ActionRoute,

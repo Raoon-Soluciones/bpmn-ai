@@ -2,6 +2,7 @@ package element
 
 import (
 	"context"
+	"time"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
@@ -29,6 +30,7 @@ type ExecutionResult struct {
 	FlowFilters []string
 	Error       error
 	DurationMs  int
+	ContinueAt  *time.Time // scheduled continuation time (e.g., for TimerEvent)
 }
 
 // Element is the base interface for all BPMN elements.

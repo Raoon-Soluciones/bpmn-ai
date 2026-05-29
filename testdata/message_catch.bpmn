@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             targetNamespace="http://example.com/message">
+  <process id="proc-message" name="Message Catch Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <intermediateCatchEvent id="msg-catch-1" name="Wait for Signal">
+      <messageEventDefinition messageRef="msg-signal"/>
+    </intermediateCatchEvent>
+    <userTask id="task-1" name="Process Signal" assignee="user-1"/>
+    <intermediateThrowEvent id="msg-throw-1" name="Send Response">
+      <messageEventDefinition messageRef="msg-response"/>
+    </intermediateThrowEvent>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="msg-catch-1"/>
+    <sequenceFlow id="flow-2" sourceRef="msg-catch-1" targetRef="task-1"/>
+    <sequenceFlow id="flow-3" sourceRef="task-1" targetRef="msg-throw-1"/>
+    <sequenceFlow id="flow-4" sourceRef="msg-throw-1" targetRef="end-1"/>
+  </process>
+  <message id="msg-signal" name="signal"/>
+  <message id="msg-response" name="response"/>
+</definitions>

@@ -111,7 +111,7 @@ func TestScriptTask_Execute(t *testing.T) {
 		Name:     "Run Script",
 		TaskType: bpmn.TaskTypeScript,
 		ExtensionData: map[string]string{
-			"scriptBody": "return true;",
+			"scriptBody": "1 + 1",
 		},
 	}
 	rawTask, err := NewScriptTask(elem)
@@ -141,8 +141,75 @@ func TestScriptTask_Execute(t *testing.T) {
 	}
 
 	val, ok := ctx.GetVariable("script_result")
-	if !ok || val != "executed" {
-		t.Errorf("expected script_result='executed', got %v", val)
+	if !ok {
+		t.Fatalf("expected script_result to be set")
+	}
+	if val != float64(2) {
+		t.Errorf("expected script_result=2, got %v", val)
+	}
+}
+
+func TestScriptTask_ChangeField(t *testing.T) {
+	elem := bpmn.Element{
+		ID:       "script-1",
+		Name:     "Change Field",
+		TaskType: bpmn.TaskTypeScript,
+		ExtensionData: map[string]string{
+			"scriptBody": "status=approved",
+			"scriptType": "change_field",
+		},
+	}
+	rawTask, err := NewScriptTask(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	task := rawTask.(*ScriptTask)
+
+	ctx := &mockExecCtx{
+		flow:      &store.FlowRecord{ElementID: "script-1"},
+		variables: make(map[string]any),
+	}
+	result := task.Execute(context.Background(), ctx)
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+
+	val, ok := ctx.GetVariable("status")
+	if !ok || val != "approved" {
+		t.Errorf("expected status='approved', got %v", val)
+	}
+}
+
+func TestScriptTask_AssignUser(t *testing.T) {
+	elem := bpmn.Element{
+		ID:       "script-1",
+		Name:     "Assign User",
+		TaskType: bpmn.TaskTypeScript,
+		ExtensionData: map[string]string{
+			"scriptBody": "user-42",
+			"scriptType": "assign_user",
+		},
+	}
+	rawTask, err := NewScriptTask(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	task := rawTask.(*ScriptTask)
+
+	ctx := &mockExecCtx{
+		flow:      &store.FlowRecord{ElementID: "script-1"},
+		variables: make(map[string]any),
+	}
+	result := task.Execute(context.Background(), ctx)
+
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+
+	val, ok := ctx.GetVariable("assigned_user")
+	if !ok || val != "user-42" {
+		t.Errorf("expected assigned_user='user-42', got %v", val)
 	}
 }
 

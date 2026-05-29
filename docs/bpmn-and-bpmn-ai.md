@@ -325,17 +325,17 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 methods)
 | **Events**    | StartEvent                  | ✅     | None trigger, process entry point                       |
 |               | EndEvent                    | ✅     | Normal process completion                               |
 |               | TerminateEvent              | ✅     | Immediate termination of all branches                   |
-|               | TimerEvent                  | ✅     | Duration (ISO 8601), date, cycle (cron)                 |
-|               | MessageThrowEvent           | ✅     | Send message (`message_ref` variable)                   |
-|               | MessageCatchEvent           | ✅     | Wait for message (`expected_message` variable)          |
-| **Gateways**  | ExclusiveGateway (XOR)      | ✅     | Condition evaluation with govaluate, default flow       |
-|               | ParallelGateway (AND)       | ✅     | Divergence (multiple threads) + convergence             |
-|               | InclusiveGateway (OR)       | ✅     | Multiple true conditions, default flow                  |
-|               | EventBasedGateway           | ✅     | Wait for first event on any branch                      |
-| **Activities**| UserTask                    | ✅     | User/group assignment, WAITING state                    |
-|               | ScriptTask                  | ✅     | Internal script execution                               |
-|               | ServiceTask                 | ✅     | Async call via job queue                                |
-| **Flows**     | SequenceFlow                | ✅     | Control flow with/without condition                     |
+|               | TimerEvent                  | ✅     | ISO 8601 duration (PT1H, P1DT30M), date (RFC 3339), cron (5-field). Auto-continues via scheduled job queue. |
+|               | MessageThrowEvent           | ✅     | Send message via `message_ref` variable.                |
+|               | MessageCatchEvent           | ✅     | Wait for message via `POST /api/v1/messages`. Correlated by instance ID + messageRef. `intermediateCatchEvent` with `messageEventDefinition` → `ElementTypeMessageCatch`; `boundaryEvent` with `messageEventDefinition` → also `ElementTypeMessageCatch`. |
+| **Gateways**  | ExclusiveGateway (XOR)      | ✅     | Condition evaluation with govaluate, default flow. `GatewayDirection` respected for converging (pass-through) vs diverging (condition evaluation). |
+|               | ParallelGateway (AND)       | ✅     | Divergence (multiple threads via `NextThreadID`), convergence (waits for all incoming flows). `GatewayDirection` shortcuts inferencing. |
+|               | InclusiveGateway (OR)       | ✅     | All matching conditions route simultaneously, else default or first. `GatewayDirection` supported. |
+|               | EventBasedGateway           | ✅     | Armed via instance variables (`eventbased_gateway_armed`, `eventbased_gateway_resolved`, `eventbased_winning_element`). `CheckAndResolve()` in Continue ensures only the first event branch proceeds. |
+| **Activities**| UserTask                    | ✅     | User/group assignment via `assignee`/`candidateUsers`/`candidateGroups`. Transitions to WAITING until external completion. |
+|               | ScriptTask                  | ✅     | Real script execution with govaluate. Script types: `business_rule` (evaluate boolean), `change_field` (parse `key=value`), `assign_team`/`assign_user`/`add_related` (set variable). `scriptBody` and `scriptType` parsed from XML attributes. |
+|               | ServiceTask                 | ✅     | Async execution via `ActionQueue`: job enqueued, process continues without waiting. |
+| **Flows**     | SequenceFlow                | ✅     | Executable first-class element: factory populates `sourceRef`/`targetRef`/`condition`/`isDefault` from `ExtensionData`. Router routes through flow elements directly. Synthetic flow (`_synth`) created during parsing for routing continuity. |
 |               | Conditional Flow            | 🔄     | Expression on sequence flow                             |
 |               | Default Flow                | ✅     | Default flow for gateways                               |
 
@@ -353,8 +353,7 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 methods)
 | Link Event                | Off-page diagram connectors                                        | Architectural limitation, non-critical         |
 | None Intermediate Event   | Plain intermediate event without trigger                           | Not relevant for most cases                    |
 | Multiple / Parallel Multiple | Multiple definitions in a single event                          | Specialized use case                           |
-| Boundary Event            | Event attached to activity (interrupting/non-interrupting)         | Parser maps `boundaryEvent` to TimerEvent only; no boundary semantics |
-| Intermediate Catch Event  | Intermediate message catch (mapped only to MessageCatch)           | Partial support                                |
+| Boundary Event            | Event attached to activity (interrupting/non-interrupting)         | Parser maps correctly (timer/message), but no attachment or interrupt semantics in engine |
 
 #### Missing Gateways
 
@@ -396,7 +395,7 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 methods)
 4. **No Diagram Rendering**: The `/api/v1/cases/{id}/diagram` endpoint returns metadata (element/flow counts), not a rendered PNG image, despite the `fogleman/gg` dependency being present.
 5. **Jobs Without Default Handler**: The WorkerPool creates jobs but the default handler is `nil` (no-op). A real handler must be injected in production.
 6. **No Authentication/Authorization**: Although `golang-jwt` is in the dependencies, no auth middleware is implemented.
-7. **Non-Functional Boundary Events**: The parser recognizes `boundaryEvent` XML and maps it to `ElementTypeTimerEvent`, but the full semantics (attaching to activities, interrupting vs non-interrupting) are not implemented in the engine.
+7. **Non-Functional Boundary Events**: The parser now maps `boundaryEvent` to the correct type (TimerEvent or MessageCatch) based on the event definition, but the full semantics (attaching to activities, interrupting vs non-interrupting) are not implemented in the engine.
 8. **gRPC Planned but Not Implemented**: Mentioned in the rewrite plan but absent from the codebase.
 
 ### 3.4 Maturity Summary
@@ -410,7 +409,7 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 methods)
 | Job queue               | ✅ Complete   | Worker pool, retry, dead letter                          |
 | REST API                | ✅ Complete   | 14 endpoints, full middleware chain                      |
 | Observability           | ✅ Complete   | Prometheus, events, file audit                           |
-| Testing                 | ✅ Complete   | 98 tests, ~80% average coverage                          |
+| Testing                 | ✅ Complete   | 100+ tests, ~80% average coverage                        |
 | Advanced elements       | ❌ Not started| Boundary events, Sub-Process, Call Activity, Signal, Error|
 | PostgreSQL Store        | ⚠️ Partial    | Interface ready, implementation pending                  |
 | Authentication          | ❌ Not started| Dependency present, middleware not implemented            |

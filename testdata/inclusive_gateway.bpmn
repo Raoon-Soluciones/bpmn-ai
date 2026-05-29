@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/inclusive">
+  <process id="proc-inclusive" name="Inclusive Gateway Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <inclusiveGateway id="gw-include" name="Include Decision" default="flow-default">
+      <extensionElements>
+        <condition flow="flow-high">priority == "high"</condition>
+        <condition flow="flow-medium">priority == "medium"</condition>
+      </extensionElements>
+    </inclusiveGateway>
+    <userTask id="task-high" name="High Priority" assignee="user-1"/>
+    <userTask id="task-medium" name="Medium Priority" assignee="user-2"/>
+    <userTask id="task-default" name="Default Path" assignee="user-3"/>
+    <inclusiveGateway id="gw-join" name="Merge" gatewayDirection="converging"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-start" sourceRef="start-1" targetRef="gw-include"/>
+    <sequenceFlow id="flow-high" sourceRef="gw-include" targetRef="task-high"/>
+    <sequenceFlow id="flow-medium" sourceRef="gw-include" targetRef="task-medium"/>
+    <sequenceFlow id="flow-default" sourceRef="gw-include" targetRef="task-default"/>
+    <sequenceFlow id="flow-h-end" sourceRef="task-high" targetRef="gw-join"/>
+    <sequenceFlow id="flow-m-end" sourceRef="task-medium" targetRef="gw-join"/>
+    <sequenceFlow id="flow-d-end" sourceRef="task-default" targetRef="gw-join"/>
+    <sequenceFlow id="flow-join" sourceRef="gw-join" targetRef="end-1"/>
+  </process>
+</definitions>

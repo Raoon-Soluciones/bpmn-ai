@@ -20,10 +20,17 @@ type SequenceFlow struct {
 
 // NewSequenceFlow creates a new sequence flow element.
 func NewSequenceFlow(elem bpmn.Element) (element.Element, error) {
-	return &SequenceFlow{
+	sf := &SequenceFlow{
 		id:   elem.ID,
 		name: elem.Name,
-	}, nil
+	}
+	if elem.ExtensionData != nil {
+		sf.sourceRef = elem.ExtensionData["sourceRef"]
+		sf.targetRef = elem.ExtensionData["targetRef"]
+		sf.condition = elem.ExtensionData["conditionExpression"]
+		sf.isDefault = elem.ExtensionData["isDefault"] == "true"
+	}
+	return sf, nil
 }
 
 // ID returns the element ID.

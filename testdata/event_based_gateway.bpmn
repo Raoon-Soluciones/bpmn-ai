@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             targetNamespace="http://example.com/eventbased">
+  <process id="proc-eventbased" name="Event-Based Gateway Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <eventBasedGateway id="gw-eb" name="Choose First Event" gatewayDirection="diverging"/>
+    <intermediateCatchEvent id="timer-branch" name="Wait 1 Hour">
+      <timerEventDefinition>
+        <timeDuration>PT1H</timeDuration>
+      </timerEventDefinition>
+    </intermediateCatchEvent>
+    <intermediateCatchEvent id="msg-branch" name="Wait for Message">
+      <messageEventDefinition messageRef="msg-decision"/>
+    </intermediateCatchEvent>
+    <userTask id="task-timer" name="Timer Path" assignee="user-1"/>
+    <userTask id="task-msg" name="Message Path" assignee="user-2"/>
+    <endEvent id="end-timer" name="Timer End"/>
+    <endEvent id="end-msg" name="Message End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="gw-eb"/>
+    <sequenceFlow id="flow-timer" sourceRef="gw-eb" targetRef="timer-branch"/>
+    <sequenceFlow id="flow-msg" sourceRef="gw-eb" targetRef="msg-branch"/>
+    <sequenceFlow id="flow-2t" sourceRef="timer-branch" targetRef="task-timer"/>
+    <sequenceFlow id="flow-2m" sourceRef="msg-branch" targetRef="task-msg"/>
+    <sequenceFlow id="flow-3t" sourceRef="task-timer" targetRef="end-timer"/>
+    <sequenceFlow id="flow-3m" sourceRef="task-msg" targetRef="end-msg"/>
+  </process>
+  <message id="msg-decision" name="decision"/>
+</definitions>

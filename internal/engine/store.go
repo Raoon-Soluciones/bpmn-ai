@@ -19,6 +19,7 @@ type EngineStore interface {
 
 	// Flow
 	CreateFlow(ctx context.Context, flow *store.FlowRecord) error
+	UpdateFlow(ctx context.Context, flow *store.FlowRecord) error
 	GetFlow(ctx context.Context, id string) (*store.FlowRecord, error)
 	GetFlowsByInstance(ctx context.Context, instanceID string) ([]*store.FlowRecord, error)
 

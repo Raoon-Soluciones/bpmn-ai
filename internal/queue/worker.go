@@ -195,6 +195,12 @@ func (wp *WorkerPool) WithDispatcher(d *observability.Dispatcher) *WorkerPool {
 	return wp
 }
 
+// WithHandler sets the job handler for the worker pool.
+func (wp *WorkerPool) WithHandler(handler JobHandler) *WorkerPool {
+	wp.handler = handler
+	return wp
+}
+
 // Enqueue creates a new job and adds it to the queue.
 func (wp *WorkerPool) Enqueue(ctx context.Context, job *store.JobRecord) error {
 	if job.ID == "" {

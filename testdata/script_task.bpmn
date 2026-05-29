@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/script">
+  <process id="proc-script" name="Script Task Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <scriptTask id="script-1" name="Business Rule" scriptType="business_rule" scriptBody="amount > 1000"/>
+    <scriptTask id="script-2" name="Change Field" scriptType="change_field" scriptBody="status=approved"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="script-1"/>
+    <sequenceFlow id="flow-2" sourceRef="script-1" targetRef="script-2"/>
+    <sequenceFlow id="flow-3" sourceRef="script-2" targetRef="end-1"/>
+  </process>
+</definitions>

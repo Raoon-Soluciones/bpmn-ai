@@ -36,7 +36,8 @@ type flowElement struct {
 	EventDefinitions []eventDefinition `xml:",any"`
 
 	// Gateways
-	DefaultFlowID string `xml:"default,attr"`
+	DefaultFlowID    string `xml:"default,attr"`
+	GatewayDirection string `xml:"gatewayDirection,attr"`
 
 	// Activities
 	Assignee       string `xml:"assignee,attr"`
@@ -165,11 +166,45 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 		case "sequenceFlow":
 			flow := p.parseFlow(fe)
 			result.Flows[flow.ID] = flow
+
+			// Create an Element record so the flow can be executed as a step
+			extData := map[string]string{
+				"sourceRef": flow.SourceRef,
+				"targetRef": flow.TargetRef,
+			}
+			if flow.Condition != "" {
+				extData["conditionExpression"] = flow.Condition
+			}
+			if flow.IsDefault {
+				extData["isDefault"] = "true"
+			}
+			result.Elements[flow.ID] = Element{
+				ID:            flow.ID,
+				Name:          flow.Name,
+				Type:          ElementTypeSequenceFlow,
+				ExtensionData: extData,
+			}
 		}
 	}
 
 	// Wire incoming/outgoing flows
 	p.wireFlows(result)
+
+	// Add synthetic flows so sequence flow elements route to their targets
+	for id, elem := range result.Elements {
+		if elem.Type == ElementTypeSequenceFlow {
+			if flow, ok := result.Flows[id]; ok {
+				syntheticID := id + "_synth"
+				result.Flows[syntheticID] = Flow{
+					ID:        syntheticID,
+					SourceRef: id,
+					TargetRef: flow.TargetRef,
+				}
+				elem.OutgoingFlows = append(elem.OutgoingFlows, syntheticID)
+				result.Elements[id] = elem
+			}
+		}
+	}
 
 	// Populate gateway conditions from flow-level conditionExpression attributes
 	for id, elem := range result.Elements {
@@ -200,18 +235,22 @@ func (p *Parser) parseEvent(fe flowElement) Element {
 	case "endEvent":
 		elem.Type = ElementTypeEndEvent
 	case "intermediateCatchEvent":
+		// Will be overridden by event definition below
 		elem.Type = ElementTypeMessageCatch
 	case "intermediateThrowEvent":
+		// Will be overridden by event definition below
 		elem.Type = ElementTypeMessageThrow
 	case "boundaryEvent":
+		// Will be overridden by event definition below
 		elem.Type = ElementTypeTimerEvent
 	}
 
-	// Parse event definitions
+	// Parse event definitions and override element type based on definition
 	for _, ed := range fe.EventDefinitions {
 		switch ed.XMLName.Local {
 		case "timerEventDefinition":
 			elem.EventDefinition.Type = EventTypeTimer
+			elem.Type = ElementTypeTimerEvent
 			if ed.TimerType != "" {
 				elem.EventDefinition.TimerType = TimerTypeDuration
 				elem.EventDefinition.TimerValue = ed.TimerType
@@ -225,12 +264,13 @@ func (p *Parser) parseEvent(fe flowElement) Element {
 		case "messageEventDefinition":
 			elem.EventDefinition.Type = EventTypeMessage
 			elem.EventDefinition.MessageRef = ed.MessageRef
-		}
-	}
-
-	// Check for terminate event definition
-	for _, ed := range fe.EventDefinitions {
-		if ed.XMLName.Local == "terminateEventDefinition" {
+			// Catch events receive messages; throw events send them
+			if fe.XMLName.Local == "intermediateCatchEvent" || fe.XMLName.Local == "boundaryEvent" {
+				elem.Type = ElementTypeMessageCatch
+			} else {
+				elem.Type = ElementTypeMessageThrow
+			}
+		case "terminateEventDefinition":
 			elem.Type = ElementTypeTerminateEvent
 			elem.EventDefinition.Type = EventTypeTerminate
 		}
@@ -260,6 +300,16 @@ func (p *Parser) parseGateway(fe flowElement) Element {
 	case "eventBasedGateway":
 		elem.Type = ElementTypeEventBasedGateway
 		elem.GatewayType = GatewayTypeEventBased
+	}
+
+	// Parse gatewayDirection attribute
+	switch GatewayDirection(fe.GatewayDirection) {
+	case GatewayDirectionDiverging:
+		elem.GatewayDirection = GatewayDirectionDiverging
+	case GatewayDirectionConverging:
+		elem.GatewayDirection = GatewayDirectionConverging
+	case GatewayDirectionMixed:
+		elem.GatewayDirection = GatewayDirectionMixed
 	}
 
 	// Parse extension data and conditions
@@ -300,6 +350,16 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 
 	elem.Assignee = fe.Assignee
 	elem.Duration = fe.Duration
+
+	if fe.ScriptBody != "" || fe.ScriptType != "" {
+		elem.ExtensionData = make(map[string]string)
+		if fe.ScriptBody != "" {
+			elem.ExtensionData["scriptBody"] = fe.ScriptBody
+		}
+		if fe.ScriptType != "" {
+			elem.ExtensionData["scriptType"] = fe.ScriptType
+		}
+	}
 
 	if fe.CandidateUsers != "" {
 		// Parse comma-separated list

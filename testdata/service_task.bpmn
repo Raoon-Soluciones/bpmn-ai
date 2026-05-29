@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/service">
+  <process id="proc-service" name="Service Task Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <serviceTask id="svc-1" name="Send Notification"/>
+    <userTask id="task-1" name="Follow Up" assignee="user-1"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="svc-1"/>
+    <sequenceFlow id="flow-2" sourceRef="svc-1" targetRef="task-1"/>
+    <sequenceFlow id="flow-3" sourceRef="task-1" targetRef="end-1"/>
+  </process>
+</definitions>

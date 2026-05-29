@@ -49,12 +49,21 @@ func (r *FlowRouter) Route(result element.ExecutionResult, proc *bpmn.Process, t
 			}
 		}
 
-		nextFlows = append(nextFlows, NextFlow{
-			FlowID:     flowID,
-			ElementID:  flow.TargetRef,
-			ElementType: proc.Elements[flow.TargetRef].Type,
-			ThreadID:   threadID,
-		})
+		if flowElem, hasFlowElem := proc.Elements[flowID]; hasFlowElem && flowElem.Type == bpmn.ElementTypeSequenceFlow {
+			nextFlows = append(nextFlows, NextFlow{
+				FlowID:      flowID,
+				ElementID:   flowID,
+				ElementType: bpmn.ElementTypeSequenceFlow,
+				ThreadID:    threadID,
+			})
+		} else {
+			nextFlows = append(nextFlows, NextFlow{
+				FlowID:      flowID,
+				ElementID:   flow.TargetRef,
+				ElementType: proc.Elements[flow.TargetRef].Type,
+				ThreadID:    threadID,
+			})
+		}
 	}
 
 	return nextFlows

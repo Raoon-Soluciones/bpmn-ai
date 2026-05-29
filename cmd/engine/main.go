@@ -14,6 +14,7 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/config"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/activities"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/flows"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
@@ -56,8 +57,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	q.Start(ctx)
-
 	registry := engine.NewElementRegistry()
 	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
 	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
@@ -72,6 +71,7 @@ func main() {
 	registry.Register(bpmn.ElementTypeUserTask, activities.NewUserTask)
 	registry.Register(bpmn.ElementTypeScriptTask, activities.NewScriptTask)
 	registry.Register(bpmn.ElementTypeServiceTask, activities.NewServiceTask)
+	registry.Register(bpmn.ElementTypeSequenceFlow, flows.NewSequenceFlow)
 
 	eng := engine.New(engine.Config{
 		WorkerCount:      cfg.Engine.WorkerCount,
@@ -79,6 +79,9 @@ func main() {
 		ExecutionTimeout: cfg.Engine.ExecutionTimeout,
 	}, registry, store, logger, q)
 	eng.WithDispatcher(dispatcher)
+
+	q.WithHandler(eng.JobHandler())
+	q.Start(ctx)
 
 	srv := http.NewServer(http.ServerConfig{
 		Host:         cfg.Server.Host,

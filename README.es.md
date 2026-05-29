@@ -73,8 +73,8 @@ Las 6 fases del plan de reescritura están **completas** y **listas para producc
 - Soporte de trabajos programados
 
 ### Fase 5: API y Observabilidad ✅
-- API REST con router chi (13 endpoints)
-- Cadena de middleware: logging, recovery, request ID, CORS
+- API REST con router chi (14 endpoints)
+- Cadena de middleware: logging, recovery, request ID, CORS, CSRF, rate limiter
 - Métricas Prometheus (10 métricas)
 - Dispatcher de eventos (12 tipos de eventos, sync/async)
 - Endpoints de health check + readiness
@@ -83,8 +83,19 @@ Las 6 fases del plan de reescritura están **completas** y **listas para producc
 - Docker multi-stage build (~15MB imagen final)
 - docker-compose con PostgreSQL 16
 - GitHub Actions CI (test, build, docker)
-- 98 tests, todos pasando con detector `-race`
-- README comprehensivo
+- CSRF protection (double-submit cookie pattern)
+- Rate limiter por IP (token bucket)
+- Parser XML seguro contra XXE
+- Evaluación de expresiones de condición BPMN (govaluate)
+- ParallelGateway convergente (espera todas las ramas entrantes)
+- SequenceFlow como elemento ejecutable — factory pobla desde ExtensionData, router enruta a través de flow elements
+- ScriptTask con ejecución real — tipos business_rule, change_field, assign_team, assign_user, add_related
+- TimerEvent con parseo ISO 8601 y cron — ContinueAt programa auto-continuación vía cola de trabajos
+- MessageCatch con correlación de mensajes — endpoint `POST /api/v1/messages`, búsqueda por instanceID + MessageRef
+- EventBasedGateway con tracking armed/resolved — el primer evento gana, las ramas subsiguientes se descartan
+- GatewayDirection — parseado desde XML y usado en lógica de divergencia/convergencia de todas las compuertas
+- Fix en parser — intermediateCatchEvent/boundaryEvent ahora mapean al tipo correcto según la definición del evento
+- 100+ tests, todos pasando con detector `-race`
 
 ---
 
@@ -321,8 +332,10 @@ PENDING ──→ RUNNING ──→ COMPLETED
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
+| GET | `/api/v1/csrf-token` | Obtener token CSRF (setea cookie, retorna token) |
 | GET | `/api/v1/cases` | Listar casos |
 | GET | `/api/v1/cases/{id}` | Detalles del caso |
+| POST | `/api/v1/messages` | Enviar mensaje a instancia MessageCatch esperando |
 | GET | `/api/v1/cases/{id}/tasks` | Tareas pendientes |
 | POST | `/api/v1/tasks/{id}/claim` | Reclamar tarea |
 | POST | `/api/v1/tasks/{id}/complete` | Completar tarea |
@@ -336,6 +349,8 @@ Todas las requests incluyen:
 - **Logging estructurado** — método, path, status, duración, request ID
 - **Recuperación de panic** — 500 en panic con logging de error
 - **CORS** — Orígenes permitidos configurables
+- **Rate Limiter** — token bucket por IP (tasa/burst configurable)
+- **CSRF Protection** — patrón double-submit cookie en métodos state-changing (POST/PUT/DELETE/PATCH); métodos seguros (GET/HEAD/OPTIONS/TRACE) pasan sin check; deshabilitado vía `DisableCSRF: true` en tests
 
 ---
 
@@ -568,7 +583,12 @@ bpmn-ai/
 │   ├── simple_sequence.bpmn
 │   ├── parallel_gateway.bpmn
 │   ├── exclusive_gateway.bpmn
+│   ├── inclusive_gateway.bpmn
+│   ├── event_based_gateway.bpmn
 │   ├── timer_event.bpmn
+│   ├── message_catch.bpmn
+│   ├── script_task.bpmn
+│   ├── service_task.bpmn
 │   └── complex_process.bpmn
 ├── Dockerfile                     # Build multi-stage (~15MB)
 ├── docker-compose.yml             # Motor + PostgreSQL
@@ -748,7 +768,7 @@ api/http                          70.6%
 pkg/store/memory                  57.2%
 ```
 
-**98 tests en total**, todos pasando con detector `-race`.
+**100+ tests en total**, todos pasando con detector `-race`.
 
 ---
 

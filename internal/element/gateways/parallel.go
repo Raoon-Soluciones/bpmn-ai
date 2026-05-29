@@ -8,33 +8,30 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 )
 
-// ParallelGateway implements the BPMN parallel gateway.
 type ParallelGateway struct {
-	id          string
-	name        string
-	gatewayType bpmn.GatewayType
+	id               string
+	name             string
+	gatewayType      bpmn.GatewayType
+	gatewayDirection bpmn.GatewayDirection
 }
 
-// NewParallelGateway creates a new parallel gateway element.
 func NewParallelGateway(elem bpmn.Element) (element.Element, error) {
 	return &ParallelGateway{
-		id:          elem.ID,
-		name:        elem.Name,
-		gatewayType: elem.GatewayType,
+		id:               elem.ID,
+		name:             elem.Name,
+		gatewayType:      elem.GatewayType,
+		gatewayDirection: elem.GatewayDirection,
 	}, nil
 }
 
-// ID returns the element ID.
 func (g *ParallelGateway) ID() string {
 	return g.id
 }
 
-// Type returns the element type.
 func (g *ParallelGateway) Type() bpmn.ElementType {
 	return bpmn.ElementTypeParallelGateway
 }
 
-// Execute routes to all outgoing flows (diverging) or waits for all incoming (converging).
 func (g *ParallelGateway) Execute(ctx context.Context, execCtx element.ExecutionContext) element.ExecutionResult {
 	flow := execCtx.Flow()
 	flow.Status = store.FlowStatusCompleted
@@ -48,7 +45,27 @@ func (g *ParallelGateway) Execute(ctx context.Context, execCtx element.Execution
 		}
 	}
 
-	// Diverging: route to all flows
+	// Use GatewayDirection if explicitly set
+	switch g.gatewayDirection {
+	case bpmn.GatewayDirectionDiverging:
+		return element.ExecutionResult{
+			Action:   element.ActionRoute,
+			FlowData: flow,
+		}
+	case bpmn.GatewayDirectionConverging:
+		if g.areAllIncomingComplete(ctx, execCtx) {
+			return element.ExecutionResult{
+				Action:   element.ActionRoute,
+				FlowData: flow,
+			}
+		}
+		return element.ExecutionResult{
+			Action:   element.ActionWait,
+			FlowData: flow,
+		}
+	}
+
+	// Fallback: infer from flow structure
 	if len(elem.OutgoingFlows) > 1 {
 		return element.ExecutionResult{
 			Action:   element.ActionRoute,
@@ -56,7 +73,6 @@ func (g *ParallelGateway) Execute(ctx context.Context, execCtx element.Execution
 		}
 	}
 
-	// Converging: check if all incoming flows have reached this gateway
 	if len(elem.IncomingFlows) > 1 {
 		allComplete := g.areAllIncomingComplete(ctx, execCtx)
 		if !allComplete {
@@ -73,17 +89,14 @@ func (g *ParallelGateway) Execute(ctx context.Context, execCtx element.Execution
 	}
 }
 
-// GatewayType returns the gateway type.
 func (g *ParallelGateway) GatewayType() bpmn.GatewayType {
 	return g.gatewayType
 }
 
-// DefaultFlowID returns empty (parallel gateways don't have defaults).
 func (g *ParallelGateway) DefaultFlowID() string {
 	return ""
 }
 
-// Conditions returns nil (parallel gateways don't have conditions).
 func (g *ParallelGateway) Conditions() map[string]string {
 	return nil
 }

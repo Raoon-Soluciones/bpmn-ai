@@ -48,9 +48,10 @@ type Element struct {
 	EventDefinition EventDefinition
 
 	// Gateway-specific fields
-	GatewayType    GatewayType
-	DefaultFlowID  string
-	Conditions     map[string]string // flowID -> expression
+	GatewayType      GatewayType
+	GatewayDirection GatewayDirection
+	DefaultFlowID    string
+	Conditions       map[string]string // flowID -> expression
 
 	// Activity-specific fields
 	TaskType       TaskType

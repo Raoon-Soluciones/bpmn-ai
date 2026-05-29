@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
@@ -154,6 +155,102 @@ func TestTimerEvent_Execute(t *testing.T) {
 				t.Errorf("expected %s, got %s", tt.wantAction, result.Action)
 			}
 		})
+	}
+}
+
+func TestTimerEvent_ContinueAt(t *testing.T) {
+	elem := bpmn.Element{
+		ID: "timer-1",
+		EventDefinition: bpmn.EventDefinition{
+			Type:       bpmn.EventTypeTimer,
+			TimerType:  bpmn.TimerTypeDuration,
+			TimerValue: "PT1H",
+		},
+	}
+	e, err := NewTimerEvent(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx := &mockExecutionContext{
+		flow:      &store.FlowRecord{ElementID: "timer-1"},
+		variables: make(map[string]any),
+	}
+	result := e.Execute(context.Background(), ctx)
+
+	if result.Action != element.ActionWait {
+		t.Errorf("expected ActionWait, got %s", result.Action)
+	}
+	if result.ContinueAt == nil {
+		t.Fatal("expected ContinueAt to be set for duration timer")
+	}
+	expected := time.Now().Add(1 * time.Hour)
+	diff := result.ContinueAt.Sub(expected)
+	if diff < -2*time.Second || diff > 2*time.Second {
+		t.Errorf("expected ContinueAt ~1h from now, diff=%v", diff)
+	}
+}
+
+func TestParseISODuration(t *testing.T) {
+	tests := []struct {
+		input    string
+		want     time.Duration
+		wantErr  bool
+	}{
+		{"PT1H", time.Hour, false},
+		{"PT30M", 30 * time.Minute, false},
+		{"PT30S", 30 * time.Second, false},
+		{"P1D", 24 * time.Hour, false},
+		{"P1DT1H", 25 * time.Hour, false},
+		{"PT1H30M", 90 * time.Minute, false},
+		{"", 0, true},
+		{"not-duration", 0, true},
+	}
+
+	for _, tt := range tests {
+		d, err := parseISODuration(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("parseISODuration(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseISODuration(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		if d != tt.want {
+			t.Errorf("parseISODuration(%q) = %v, want %v", tt.input, d, tt.want)
+		}
+	}
+}
+
+func TestCalculateSchedule_Duration(t *testing.T) {
+	tm := calculateSchedule(bpmn.TimerTypeDuration, "PT30M")
+	if tm == nil {
+		t.Fatal("expected non-nil time")
+	}
+	expected := time.Now().Add(30 * time.Minute)
+	diff := tm.Sub(expected)
+	if diff < -2*time.Second || diff > 2*time.Second {
+		t.Errorf("expected ~30m, diff=%v", diff)
+	}
+}
+
+func TestCalculateSchedule_Date(t *testing.T) {
+	tm := calculateSchedule(bpmn.TimerTypeDate, "2027-06-01T12:00:00Z")
+	if tm == nil {
+		t.Fatal("expected non-nil time")
+	}
+	if tm.Year() != 2027 || tm.Month() != 6 || tm.Day() != 1 {
+		t.Errorf("expected 2027-06-01, got %v", tm)
+	}
+}
+
+func TestCalculateSchedule_Empty(t *testing.T) {
+	tm := calculateSchedule("unknown", "")
+	if tm != nil {
+		t.Errorf("expected nil for unknown type, got %v", tm)
 	}
 }
 

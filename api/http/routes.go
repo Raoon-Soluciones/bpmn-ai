@@ -35,5 +35,7 @@ func (s *Server) routes() {
 
 		r.Post("/tasks/{id}/claim", s.claimTask)
 		r.Post("/tasks/{id}/complete", s.completeTask)
+
+		r.Post("/messages", s.sendMessage)
 	})
 }
