@@ -12,6 +12,7 @@ type Config struct {
 	Server      ServerConfig
 	Database    DatabaseConfig
 	Engine      EngineConfig
+	AI          AIConfig
 	Log         LogConfig
 	Audit       AuditConfig
 }
@@ -38,11 +39,42 @@ type DatabaseConfig struct {
 
 // EngineConfig holds BPMN engine configuration.
 type EngineConfig struct {
-	WorkerCount      int
-	MaxLoops         int
-	ExecutionTimeout time.Duration
+	WorkerCount       int
+	MaxLoops          int
+	ExecutionTimeout  time.Duration
 	QueuePollInterval time.Duration
-	MaxRetries       int
+	MaxRetries        int
+}
+
+// AIConfig holds AI provider configuration.
+type AIConfig struct {
+	Provider       string
+	APIKey         string
+	BaseURL        string
+	DefaultModel   string
+	FallbackModel  string
+	MaxTokens      int
+	Temperature    float64
+	Timeout        time.Duration
+	Cache          AICacheConfig
+	DefaultProfile string
+	ExtraProviders string // comma-separated: name:key:url
+}
+
+// AIProviderConfig holds configuration for a named AI provider.
+type AIProviderConfig struct {
+	Provider string // "openai", "anthropic"
+	Model    string
+	APIKey   string
+	BaseURL  string
+}
+
+// AICacheConfig holds AI response cache configuration.
+type AICacheConfig struct {
+	Enabled  bool
+	TTL      time.Duration
+	Type     string // "memory" or "redis"
+	RedisURL string
 }
 
 // LogConfig holds logging configuration.
@@ -86,6 +118,24 @@ func Default() Config {
 			QueuePollInterval: 5 * time.Second,
 			MaxRetries:        3,
 		},
+		AI: AIConfig{
+			Provider:       envOrDefault("AI_PROVIDER", "openai"),
+			APIKey:         os.Getenv("AI_API_KEY"),
+			BaseURL:        os.Getenv("AI_BASE_URL"),
+			DefaultModel:   envOrDefault("AI_DEFAULT_MODEL", "gpt-4o"),
+			FallbackModel:  envOrDefault("AI_FALLBACK_MODEL", "gpt-4o-mini"),
+			MaxTokens:      parseEnvInt("AI_MAX_TOKENS", 4096),
+			Temperature:    parseEnvFloat("AI_TEMPERATURE", 0.7),
+			Timeout:        parseEnvDuration("AI_TIMEOUT", 60*time.Second),
+			DefaultProfile: envOrDefault("AI_DEFAULT_PROFILE", "auto"),
+			ExtraProviders: os.Getenv("AI_EXTRA_PROVIDERS"),
+			Cache: AICacheConfig{
+				Enabled:  parseBoolEnv("AI_CACHE_ENABLED", false),
+				TTL:      parseEnvDuration("AI_CACHE_TTL", 5*time.Minute),
+				Type:     envOrDefault("AI_CACHE_TYPE", "memory"),
+				RedisURL: os.Getenv("AI_REDIS_URL"),
+			},
+		},
 		Log: LogConfig{
 			Level:  "info",
 			Format: "json",
@@ -95,6 +145,42 @@ func Default() Config {
 			Dir:     envOrDefault("AUDIT_LOG_DIR", "./data/audit"),
 		},
 	}
+}
+
+func parseEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
+func parseEnvFloat(key string, defaultVal float64) float64 {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return f
+}
+
+func parseEnvDuration(key string, defaultVal time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		return defaultVal
+	}
+	return d
 }
 
 func parseBoolEnv(key string, defaultVal bool) bool {

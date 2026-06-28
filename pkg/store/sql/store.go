@@ -573,3 +573,22 @@ func (s *Store) GetExecutionLog(ctx context.Context, instanceID string) ([]*stor
 	}
 	return result, rows.Err()
 }
+
+func (s *Store) LogAICall(ctx context.Context, entry *store.AIAuditLogEntry) error {
+	if entry.ID == "" {
+		entry.ID = uuid.New().String()
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now()
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO ai_audit_log (id, instance_id, element_id, model, input_text, output_text,
+		 tokens_in, tokens_out, duration_ms, success, error_message, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		entry.ID, entry.InstanceID, entry.ElementID, entry.Model,
+		entry.InputText, entry.OutputText,
+		entry.TokensIn, entry.TokensOut, entry.DurationMs,
+		entry.Success, entry.ErrorMessage, entry.CreatedAt,
+	)
+	return err
+}

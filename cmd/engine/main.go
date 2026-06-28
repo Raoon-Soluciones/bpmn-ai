@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/engine"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/ai"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
@@ -84,6 +86,125 @@ func main() {
 	registry.Register(bpmn.ElementTypeCallActivity, activities.NewCallActivity)
 	registry.Register(bpmn.ElementTypeSignalThrow, events.NewSignalThrowEvent)
 	registry.Register(bpmn.ElementTypeSignalCatch, events.NewSignalCatchEvent)
+
+	aiRegistry := ai.NewProviderRegistry()
+	aiRegistry.Register("openai", ai.NewOpenAIProvider)
+	aiRegistry.Register("anthropic", ai.NewAnthropicProvider)
+
+	providerPool := ai.NewProviderPool()
+	toolRegistry := ai.NewToolRegistry()
+	promptManager := ai.NewPromptManager()
+
+	var aiGateway ai.Gateway
+	var modelRouter *ai.ModelRouter
+	var ragSystem *ai.RAGSystem
+
+	// OpenRouter takes precedence — single API key for 200+ models
+	openRouterKey := os.Getenv("AI_OPENROUTER_API_KEY")
+	if openRouterKey != "" {
+		orGW, err := aiRegistry.Create("openai", openRouterKey, "https://openrouter.ai/api/v1")
+		if err != nil {
+			logger.Error("failed to create OpenRouter provider", "error", err)
+		} else {
+			providerPool.Add("openrouter", orGW)
+
+			orFallback, err := aiRegistry.Create("openai", openRouterKey, "https://openrouter.ai/api/v1")
+			if err != nil {
+				aiGateway = orGW
+			} else {
+				providerPool.Add("openrouter-fallback", orFallback)
+				aiGateway = ai.NewFallbackGateway(orGW, orFallback)
+			}
+
+			logger.Info("OpenRouter configured as primary AI provider (200+ models)")
+		}
+	}
+
+	// If no OpenRouter, fall back to classic provider configuration
+	if openRouterKey == "" && cfg.AI.APIKey != "" {
+		primary, err := aiRegistry.Create(cfg.AI.Provider, cfg.AI.APIKey, cfg.AI.BaseURL)
+		if err != nil {
+			logger.Error("failed to create primary AI provider", "error", err)
+		} else {
+			providerPool.Add("primary", primary)
+			providerPool.Add(cfg.AI.Provider, primary)
+
+			secondary, err := aiRegistry.Create(cfg.AI.Provider, cfg.AI.APIKey, cfg.AI.BaseURL)
+			if err != nil {
+				logger.Error("failed to create fallback AI provider", "error", err)
+				aiGateway = primary
+			} else {
+				providerPool.Add("fallback", secondary)
+				aiGateway = ai.NewFallbackGateway(primary, secondary)
+			}
+		}
+	}
+
+	// Add extra providers alongside OpenRouter or classic config
+	if anthropicKey := os.Getenv("AI_ANTHROPIC_API_KEY"); anthropicKey != "" {
+		if anthropicGW, err := aiRegistry.Create("anthropic", anthropicKey, ""); err == nil {
+			providerPool.Add("anthropic", anthropicGW)
+			logger.Info("Anthropic provider added to model router")
+		}
+	}
+	if groqKey := os.Getenv("AI_GROQ_API_KEY"); groqKey != "" {
+		if groqGW, err := aiRegistry.Create("openai", groqKey, "https://api.groq.com/openai/v1"); err == nil {
+			providerPool.Add("groq", groqGW)
+			logger.Info("Groq provider added to model router")
+		}
+	}
+	if extra := os.Getenv("AI_EXTRA_PROVIDERS"); extra != "" {
+		for _, entry := range strings.Split(extra, ",") {
+			parts := strings.Split(strings.TrimSpace(entry), ":")
+			if len(parts) >= 3 {
+				if extraGW, err := aiRegistry.Create("openai", parts[1], parts[2]); err == nil {
+					providerPool.Add(parts[0], extraGW)
+					logger.Info("Extra provider added", "name", parts[0])
+				}
+			}
+		}
+	}
+
+	if aiGateway != nil {
+		modelRouter = ai.NewModelRouter(providerPool)
+
+		// Use OpenRouter-prefixed profiles when OpenRouter is primary
+		profileModel := cfg.AI.DefaultModel
+		if openRouterKey != "" {
+			profileModel = "openrouter/openai/gpt-4o"
+			modelRouter.SetProfiles(map[string]ai.Profile{
+				"complex": {Model: "openrouter/openai/gpt-4o", MaxTokens: 8192, Priority: "quality"},
+				"fast":    {Model: "openrouter/openai/gpt-4o-mini", MaxTokens: 2048, Priority: "speed"},
+				"cheap":   {Model: "openrouter/openai/gpt-4o-mini", MaxTokens: 1024, Priority: "cost"},
+				"auto":    {Model: "openrouter/openai/gpt-4o", MaxTokens: 4096, Priority: "quality"},
+			})
+		}
+		modelRouter.AddProfile("auto", ai.Profile{Model: profileModel, MaxTokens: cfg.AI.MaxTokens, Priority: "quality"})
+
+		embedderKey := cfg.AI.APIKey
+		embedderBase := cfg.AI.BaseURL
+		if openRouterKey != "" {
+			embedderKey = openRouterKey
+			embedderBase = "https://openrouter.ai/api/v1"
+		}
+		embedder, err := ai.NewOpenAIEmbedder(embedderKey, embedderBase)
+		if err == nil {
+			ragSystem = ai.NewRAGSystem(embedder)
+			ragSystem.AddCollection("default", ai.NewInMemoryVectorStore())
+			logger.Info("RAG system initialized with default collection")
+		} else {
+			logger.Info("failed to create embedder, RAG disabled", "error", err)
+		}
+
+		registry.Register(bpmn.ElementTypeAITask, activities.NewAITaskConstructor(aiGateway, toolRegistry, modelRouter, ragSystem, promptManager))
+		logger.Info("AI task element registered with model router",
+			"providers", providerPool.List(),
+			"default_model", cfg.AI.DefaultModel,
+			"default_profile", cfg.AI.DefaultProfile,
+		)
+	} else {
+		logger.Info("AI not configured — set AI_API_KEY or AI_OPENROUTER_API_KEY")
+	}
 
 	eng := engine.New(engine.Config{
 		WorkerCount:      cfg.Engine.WorkerCount,

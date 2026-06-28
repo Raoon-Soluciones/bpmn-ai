@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/ai"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
@@ -1787,4 +1789,304 @@ type assertAnError string
 
 func (e assertAnError) Error() string {
 	return string(e)
+}
+
+// --- AI Task Tests ---
+
+type mockAIGateway struct {
+	response string
+}
+
+func (m *mockAIGateway) Generate(_ context.Context, req ai.Request) (ai.Response, error) {
+	return ai.Response{
+		Text:       m.response,
+		Model:      "mock-model",
+		TokensIn:   len(req.System) + len(req.Messages[0].Content),
+		TokensOut:  len(m.response),
+		DurationMs: 1,
+	}, nil
+}
+
+func newMockAIGateway(response string) *mockAIGateway {
+	return &mockAIGateway{response: response}
+}
+
+func TestEngine_Run_AITask(t *testing.T) {
+	proc := &bpmn.Process{
+		ID:           "proc-ai",
+		Name:         "AI Task Process",
+		StartEventID: "start-1",
+		Elements: map[string]bpmn.Element{
+			"start-1": {
+				ID: "start-1", Type: bpmn.ElementTypeStartEvent,
+				OutgoingFlows: []string{"flow-1"},
+			},
+			"ai-1": {
+				ID: "ai-1", Type: bpmn.ElementTypeAITask,
+				IncomingFlows: []string{"flow-1"},
+				OutgoingFlows: []string{"flow-2"},
+				ExtensionData: map[string]string{
+					"scriptBody":   "Classify this: {{input}}",
+					"model":        "gpt-4o",
+					"systemPrompt": "You are a classifier.",
+				},
+			},
+			"end-1": {
+				ID: "end-1", Type: bpmn.ElementTypeEndEvent,
+				IncomingFlows: []string{"flow-2"},
+			},
+		},
+		Flows: map[string]bpmn.Flow{
+			"flow-1": {ID: "flow-1", SourceRef: "start-1", TargetRef: "ai-1"},
+			"flow-2": {ID: "flow-2", SourceRef: "ai-1", TargetRef: "end-1"},
+		},
+	}
+
+	registry := NewElementRegistry()
+	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
+	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
+	registry.Register(bpmn.ElementTypeAITask, activities.NewAITaskConstructor(newMockAIGateway("approved"), ai.NewToolRegistry(), nil, nil, nil))
+
+	s := memory.NewStore()
+	logger, _ := observability.NewFromConfig("info", "text")
+	eng := New(Config{WorkerCount: 1, MaxLoops: 100, ExecutionTimeout: 5 * time.Second}, registry, s, logger, nil)
+
+	instance := process.NewInstance(proc, map[string]any{"input": "urgent billing issue"})
+	if err := s.CreateInstance(context.Background(), instance.ToRecord()); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := eng.Run(ctx, instance)
+	if err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+
+	if instance.State != process.StateCompleted {
+		t.Errorf("expected state COMPLETED, got %s", instance.State)
+	}
+
+	result, ok := instance.GetVariable("ai-1_result")
+	if !ok {
+		t.Fatal("expected ai-1_result variable to be set")
+	}
+	if result != "approved" {
+		t.Errorf("expected ai-1_result='approved', got %v", result)
+	}
+
+	model, ok := instance.GetVariable("ai-1_model")
+	if !ok || model != "mock-model" {
+		t.Errorf("expected ai-1_model='mock-model', got %v", model)
+	}
+}
+
+func TestEngine_Run_AITask_WithTools(t *testing.T) {
+	tr := ai.NewToolRegistry()
+	err := tr.Register(ai.ToolDefinition{
+		Name:        "get_ticket_info",
+		Description: "Get ticket information by ID",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`),
+		Function: func(_ context.Context, args json.RawMessage) (string, error) {
+			return `{"id":"TKT-001","priority":"high","status":"open"}`, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	proc := &bpmn.Process{
+		ID:           "proc-ai-tools",
+		Name:         "AI Task With Tools",
+		StartEventID: "start-1",
+		Elements: map[string]bpmn.Element{
+			"start-1": {
+				ID: "start-1", Type: bpmn.ElementTypeStartEvent,
+				OutgoingFlows: []string{"flow-1"},
+			},
+			"ai-1": {
+				ID: "ai-1", Type: bpmn.ElementTypeAITask,
+				IncomingFlows: []string{"flow-1"},
+				OutgoingFlows: []string{"flow-2"},
+				ExtensionData: map[string]string{
+					"scriptBody": "Check ticket {{ticket_id}}",
+					"tools":      "get_ticket_info",
+				},
+			},
+			"end-1": {
+				ID: "end-1", Type: bpmn.ElementTypeEndEvent,
+				IncomingFlows: []string{"flow-2"},
+			},
+		},
+		Flows: map[string]bpmn.Flow{
+			"flow-1": {ID: "flow-1", SourceRef: "start-1", TargetRef: "ai-1"},
+			"flow-2": {ID: "flow-2", SourceRef: "ai-1", TargetRef: "end-1"},
+		},
+	}
+
+	registry := NewElementRegistry()
+	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
+	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
+	registry.Register(bpmn.ElementTypeAITask, activities.NewAITaskConstructor(newMockAIGateway("ticket found"), tr, nil, nil, nil))
+
+	s := memory.NewStore()
+	logger, _ := observability.NewFromConfig("info", "text")
+	eng := New(Config{WorkerCount: 1, MaxLoops: 100, ExecutionTimeout: 5 * time.Second}, registry, s, logger, nil)
+
+	instance := process.NewInstance(proc, map[string]any{"ticket_id": "TKT-001"})
+	if err := s.CreateInstance(context.Background(), instance.ToRecord()); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = eng.Run(ctx, instance)
+	if err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+
+	if instance.State != process.StateCompleted {
+		t.Errorf("expected state COMPLETED, got %s", instance.State)
+	}
+
+	result, ok := instance.GetVariable("ai-1_result")
+	if !ok {
+		t.Fatal("expected ai-1_result variable to be set")
+	}
+	if result != "ticket found" {
+		t.Errorf("expected ai-1_result='ticket found', got %v", result)
+	}
+}
+
+func TestEngine_Run_AITask_Error(t *testing.T) {
+	errorGateway := aiErrorMock{}
+	proc := &bpmn.Process{
+		ID:           "proc-ai-err",
+		Name:         "AI Task Error",
+		StartEventID: "start-1",
+		Elements: map[string]bpmn.Element{
+			"start-1": {
+				ID: "start-1", Type: bpmn.ElementTypeStartEvent,
+				OutgoingFlows: []string{"flow-1"},
+			},
+			"ai-1": {
+				ID: "ai-1", Type: bpmn.ElementTypeAITask,
+				IncomingFlows: []string{"flow-1"},
+				OutgoingFlows: []string{"flow-2"},
+				ExtensionData: map[string]string{
+					"scriptBody": "test",
+				},
+			},
+			"end-1": {
+				ID: "end-1", Type: bpmn.ElementTypeEndEvent,
+				IncomingFlows: []string{"flow-2"},
+			},
+		},
+		Flows: map[string]bpmn.Flow{
+			"flow-1": {ID: "flow-1", SourceRef: "start-1", TargetRef: "ai-1"},
+			"flow-2": {ID: "flow-2", SourceRef: "ai-1", TargetRef: "end-1"},
+		},
+	}
+
+	registry := NewElementRegistry()
+	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
+	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
+	registry.Register(bpmn.ElementTypeAITask, activities.NewAITaskConstructor(errorGateway, ai.NewToolRegistry(), nil, nil, nil))
+
+	s := memory.NewStore()
+	logger, _ := observability.NewFromConfig("info", "text")
+	eng := New(Config{WorkerCount: 1, MaxLoops: 100, ExecutionTimeout: 5 * time.Second}, registry, s, logger, nil)
+
+	instance := process.NewInstance(proc, nil)
+	if err := s.CreateInstance(context.Background(), instance.ToRecord()); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := eng.Run(ctx, instance)
+	if err == nil {
+		t.Fatal("expected engine run to fail due to AI error")
+	}
+	t.Logf("engine returned expected error: %v", err)
+
+	if instance.State != process.StateError {
+		t.Logf("instance state: %s (expected ERROR due to AI failure)", instance.State)
+	}
+}
+
+func TestEngine_Run_AITask_OutputSchema(t *testing.T) {
+	proc := &bpmn.Process{
+		ID:           "proc-ai-schema",
+		Name:         "AI Task With Schema",
+		StartEventID: "start-1",
+		Elements: map[string]bpmn.Element{
+			"start-1": {
+				ID: "start-1", Type: bpmn.ElementTypeStartEvent,
+				OutgoingFlows: []string{"flow-1"},
+			},
+			"ai-1": {
+				ID: "ai-1", Type: bpmn.ElementTypeAITask,
+				IncomingFlows: []string{"flow-1"},
+				OutgoingFlows: []string{"flow-2"},
+				ExtensionData: map[string]string{
+					"scriptBody":   "Classify: {{input}}",
+					"outputSchema": `{"type":"object","properties":{"category":{"type":"string"},"score":{"type":"number"}},"required":["category","score"]}`,
+				},
+			},
+			"end-1": {
+				ID: "end-1", Type: bpmn.ElementTypeEndEvent,
+				IncomingFlows: []string{"flow-2"},
+			},
+		},
+		Flows: map[string]bpmn.Flow{
+			"flow-1": {ID: "flow-1", SourceRef: "start-1", TargetRef: "ai-1"},
+			"flow-2": {ID: "flow-2", SourceRef: "ai-1", TargetRef: "end-1"},
+		},
+	}
+
+	registry := NewElementRegistry()
+	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
+	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
+	registry.Register(bpmn.ElementTypeAITask, activities.NewAITaskConstructor(newMockAIGateway(`{"category":"billing","score":85}`), ai.NewToolRegistry(), nil, nil, nil))
+
+	s := memory.NewStore()
+	logger, _ := observability.NewFromConfig("info", "text")
+	eng := New(Config{WorkerCount: 1, MaxLoops: 100, ExecutionTimeout: 5 * time.Second}, registry, s, logger, nil)
+
+	instance := process.NewInstance(proc, map[string]any{"input": "urgent billing"})
+	if err := s.CreateInstance(context.Background(), instance.ToRecord()); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := eng.Run(ctx, instance)
+	if err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+
+	if instance.State != process.StateCompleted {
+		t.Errorf("expected state COMPLETED, got %s", instance.State)
+	}
+
+	_, hasParsed := instance.GetVariable("ai-1_parsed")
+	if !hasParsed {
+		t.Fatal("expected ai-1_parsed variable to be set")
+	}
+
+	_, hasValidationErr := instance.GetVariable("ai-1_validation_error")
+	if hasValidationErr {
+		t.Fatal("expected no validation error")
+	}
+}
+
+type aiErrorMock struct{}
+
+func (e aiErrorMock) Generate(_ context.Context, _ ai.Request) (ai.Response, error) {
+	return ai.Response{}, fmt.Errorf("mock AI failure")
 }

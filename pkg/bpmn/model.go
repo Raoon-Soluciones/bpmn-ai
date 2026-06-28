@@ -26,6 +26,7 @@ const (
 	ElementTypeCallActivity    ElementType = "callActivity"
 	ElementTypeSignalThrow    ElementType = "signalThrow"
 	ElementTypeSignalCatch    ElementType = "signalCatch"
+	ElementTypeAITask        ElementType = "aiTask"
 )
 
 // Process represents a parsed BPMN 2.0 process definition.
@@ -148,6 +149,7 @@ const (
 	TaskTypeUser    TaskType = "user"
 	TaskTypeScript  TaskType = "script"
 	TaskTypeService TaskType = "service"
+	TaskTypeAI      TaskType = "ai"
 )
 
 // ScriptType represents the type of script task.
@@ -159,4 +161,5 @@ const (
 	ScriptTypeAssignTeam    ScriptType = "assign_team"
 	ScriptTypeAssignUser    ScriptType = "assign_user"
 	ScriptTypeAddRelated    ScriptType = "add_related"
+	ScriptTypeAI            ScriptType = "ai"
 )

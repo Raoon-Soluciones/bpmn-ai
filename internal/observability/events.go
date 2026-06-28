@@ -81,4 +81,5 @@ const (
 	EventJobCompleted      = "job.completed"
 	EventJobFailed         = "job.failed"
 	EventJobDead           = "job.dead"
+	EventAICall            = "ai.call"
 )

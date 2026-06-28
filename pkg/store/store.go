@@ -150,6 +150,25 @@ type Store interface {
 	// Execution log
 	LogExecution(ctx context.Context, entry *ExecutionLogEntry) error
 	GetExecutionLog(ctx context.Context, instanceID string) ([]*ExecutionLogEntry, error)
+
+	// AI audit log
+	LogAICall(ctx context.Context, entry *AIAuditLogEntry) error
+}
+
+// AIAuditLogEntry represents a single AI call audit log entry.
+type AIAuditLogEntry struct {
+	ID           string
+	InstanceID   string
+	ElementID    string
+	Model        string
+	InputText    string
+	OutputText   string
+	TokensIn     int
+	TokensOut    int
+	DurationMs   int
+	Success      bool
+	ErrorMessage string
+	CreatedAt    time.Time
 }
 
 // ExecutionLogEntry represents a single execution log entry.

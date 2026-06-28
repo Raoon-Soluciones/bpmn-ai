@@ -34,4 +34,7 @@ type EngineStore interface {
 
 	// Execution log
 	LogExecution(ctx context.Context, entry *store.ExecutionLogEntry) error
+
+	// AI audit log
+	LogAICall(ctx context.Context, entry *store.AIAuditLogEntry) error
 }

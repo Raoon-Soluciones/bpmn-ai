@@ -21,6 +21,7 @@ type Store struct {
 	jobs        map[string]*store.JobRecord
 	deadLetters map[string]*store.DeadLetterRecord
 	logs        []*store.ExecutionLogEntry
+	aiLogs      []*store.AIAuditLogEntry
 
 	threadSeq int
 }
@@ -312,6 +313,17 @@ func (s *Store) LogExecution(_ context.Context, entry *store.ExecutionLogEntry) 
 	return nil
 }
 
+func (s *Store) LogAICall(_ context.Context, entry *store.AIAuditLogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry.ID == "" {
+		entry.ID = uuid.New().String()
+	}
+	entry.CreatedAt = time.Now()
+	s.aiLogs = append(s.aiLogs, entry)
+	return nil
+}
+
 func (s *Store) GetExecutionLog(_ context.Context, instanceID string) ([]*store.ExecutionLogEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -335,5 +347,6 @@ func (s *Store) Reset() {
 	s.jobs = make(map[string]*store.JobRecord)
 	s.deadLetters = make(map[string]*store.DeadLetterRecord)
 	s.logs = make([]*store.ExecutionLogEntry, 0)
+	s.aiLogs = make([]*store.AIAuditLogEntry, 0)
 	s.threadSeq = 0
 }

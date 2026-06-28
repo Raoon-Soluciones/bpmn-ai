@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             targetNamespace="http://example.com/ai">
+  <process id="proc-ai" name="AI Task Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <scriptTask id="ai-1" name="Classify Request" scriptType="ai"
+        scriptBody="Classify this request: {{request_text}}"
+        model="gpt-4o"
+        systemPrompt="You are a classifier. Reply with one word."/>
+    <scriptTask id="ai-2" name="RAG Enhanced" scriptType="ai"
+        scriptBody="Answer based on knowledge base: {{query}}"
+        profile="fast"
+        rag="default"/>
+    <scriptTask id="ai-3" name="Multi-Agent" scriptType="ai"
+        scriptBody="Analyze {{data}}"
+        agents='[{"name":"extract","prompt":"Extract entities from {{data}}","outputKey":"entities"},{"name":"summarize","prompt":"Summarize: {{entities}}","outputKey":"summary"}]'/>
+    <scriptTask id="script-result" name="Log Result"
+        scriptType="change_field" scriptBody="classification_result=${ai-1_result}"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="ai-1"/>
+    <sequenceFlow id="flow-2" sourceRef="ai-1" targetRef="script-result"/>
+    <sequenceFlow id="flow-3" sourceRef="script-result" targetRef="end-1"/>
+  </process>
+</definitions>

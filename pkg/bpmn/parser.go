@@ -52,6 +52,17 @@ type flowElement struct {
 	ScriptType string `xml:"scriptType,attr"`
 	ScriptBody string `xml:"scriptBody,attr"`
 
+	// AI task attributes
+	Model        string `xml:"model,attr"`
+	Profile      string `xml:"profile,attr"`
+	SystemPrompt string `xml:"systemPrompt,attr"`
+	OutputSchema string `xml:"outputSchema,attr"`
+	Tools        string `xml:"tools,attr"`
+	RAG          string `xml:"rag,attr"`
+	Agents       string `xml:"agents,attr"`
+	PromptRef    string `xml:"promptRef,attr"`
+	Stream       string `xml:"stream,attr"`
+
 	// Flows / Relationships
 	SourceRef string `xml:"sourceRef,attr"`
 	TargetRef string `xml:"targetRef,attr"`
@@ -556,8 +567,13 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 		elem.Type = ElementTypeUserTask
 		elem.TaskType = TaskTypeUser
 	case "scriptTask":
-		elem.Type = ElementTypeScriptTask
-		elem.TaskType = TaskTypeScript
+		if fe.ScriptType == "ai" {
+			elem.Type = ElementTypeAITask
+			elem.TaskType = TaskTypeAI
+		} else {
+			elem.Type = ElementTypeScriptTask
+			elem.TaskType = TaskTypeScript
+		}
 	case "serviceTask":
 		elem.Type = ElementTypeServiceTask
 		elem.TaskType = TaskTypeService
@@ -579,6 +595,39 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 		}
 		if fe.ScriptType != "" {
 			elem.ExtensionData["scriptType"] = fe.ScriptType
+		}
+	}
+
+	if fe.Model != "" || fe.Profile != "" || fe.SystemPrompt != "" || fe.OutputSchema != "" || fe.Tools != "" || fe.RAG != "" || fe.Agents != "" || fe.PromptRef != "" || fe.Stream != "" {
+		if elem.ExtensionData == nil {
+			elem.ExtensionData = make(map[string]string)
+		}
+		if fe.Model != "" {
+			elem.ExtensionData["model"] = fe.Model
+		}
+		if fe.Profile != "" {
+			elem.ExtensionData["profile"] = fe.Profile
+		}
+		if fe.SystemPrompt != "" {
+			elem.ExtensionData["systemPrompt"] = fe.SystemPrompt
+		}
+		if fe.OutputSchema != "" {
+			elem.ExtensionData["outputSchema"] = fe.OutputSchema
+		}
+		if fe.Tools != "" {
+			elem.ExtensionData["tools"] = fe.Tools
+		}
+		if fe.RAG != "" {
+			elem.ExtensionData["rag"] = fe.RAG
+		}
+		if fe.Agents != "" {
+			elem.ExtensionData["agents"] = fe.Agents
+		}
+		if fe.PromptRef != "" {
+			elem.ExtensionData["promptRef"] = fe.PromptRef
+		}
+		if fe.Stream != "" {
+			elem.ExtensionData["stream"] = fe.Stream
 		}
 	}
 
