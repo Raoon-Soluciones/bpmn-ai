@@ -50,7 +50,7 @@ Las 6 fases del plan de reescritura están **completas** y **listas para producc
 ### Fase 1: Fundamentos ✅
 - Tipos de dominio, analizador XML BPMN
 - Interfaz de almacenamiento + implementación en memoria
-- Máquina de estados con 8 estados y transiciones válidas
+- Máquina de estados con 7 estados y transiciones válidas
 - Sistema de configuración + logging estructurado (slog)
 
 ### Fase 2: Bucle de Ejecución ✅
@@ -62,7 +62,7 @@ Las 6 fases del plan de reescritura están **completas** y **listas para producc
 
 ### Fase 3: Elementos ✅
 - **Actividades**: UserTask, ScriptTask, ServiceTask
-- **Eventos**: TimerEvent, MessageThrowEvent, MessageCatchEvent, TerminateEvent
+- **Eventos**: TimerEvent, MessageThrowEvent, MessageCatchEvent, TerminateEvent, ErrorEndEvent, ErrorCatchEvent
 - **Compuertas**: InclusiveGateway, EventBasedGateway
 
 ### Fase 4: Cola y Asíncrono ✅
@@ -88,6 +88,7 @@ Las 6 fases del plan de reescritura están **completas** y **listas para producc
 - Parser XML seguro contra XXE
 - Evaluación de expresiones de condición BPMN (govaluate)
 - ParallelGateway convergente (espera todas las ramas entrantes)
+- Sub-Process (embebido) — elementos internos aplanados con IDs prefijados, flows de entrada sintéticos, ruteo de salida vía end event
 - SequenceFlow como elemento ejecutable — factory pobla desde ExtensionData, router enruta a través de flow elements
 - ScriptTask con ejecución real — tipos business_rule, change_field, assign_team, assign_user, add_related
 - TimerEvent con parseo ISO 8601 y cron — ContinueAt programa auto-continuación vía cola de trabajos
@@ -147,7 +148,7 @@ docker-compose up -d
 │  │ Eventos │ │Compuertas│ │Actividades│ │    Flujos    │    │
 │  │ Inicio  │ │ Paralelo │ │ UserTask │ │  Secuencia   │    │
 │  │ Fin     │ │Exclusivo │ │ScriptTask│ │              │    │
-│  │ Timer   │ │Inclusivo │ │SrvceTask │ │              │    │
+│  │ Timer   │ │Inclusivo │ │SvcTask   │ │              │    │
 │  │ Mensaje │ │EventBased│ │          │ │              │    │
 │  │Term     │ │          │ │          │ │              │    │
 │  └─────────┘ └──────────┘ └──────────┘ └──────────────┘    │
@@ -281,31 +282,44 @@ PENDING ──→ RUNNING ──→ COMPLETED
 | Start Event | ✅ | Punto de entrada del proceso |
 | End Event | ✅ | Completación del proceso |
 | Terminate Event | ✅ | Terminación inmediata del proceso |
-| Timer Event | ✅ | Disparadores basados en tiempo (duración, fecha, ciclo) |
-| Message Throw Event | ✅ | Enviar mensaje |
-| Message Catch Event | ✅ | Esperar mensaje |
+| Timer Event | ✅ | Duración ISO 8601, fecha, cron — auto-continuación vía job queue |
+| Message Throw Event | ✅ | Enviar mensaje vía `POST /api/v1/messages` |
+| Message Catch Event | ✅ | Esperar mensaje, correlacionado por instanceID + messageRef |
+| Error End Event | ✅ | Lanzar error con código, capturado por boundary handler |
+| Error Catch Event | ✅ | Capturar errores en sub-process (boundary) o event sub-process (start) |
+| Signal Throw Event | ✅ | Broadcast de señal a todas las instancias esperando |
+| Signal Catch Event | ✅ | Esperar señal broadcast desde cualquier instancia |
 
 ### Compuertas
 | Elemento | Estado | Descripción |
 |---------|--------|-------------|
-| Exclusive Gateway | ✅ | XOR — enrutar a primera condición coincidente |
-| Parallel Gateway | ✅ | AND — enrutar a todas las ramas / esperar todas |
-| Inclusive Gateway | ✅ | OR — enrutar a todas las condiciones coincidentes |
-| Event-Based Gateway | ✅ | Enrutar basado en qué evento ocurre primero |
+| Exclusive Gateway | ✅ | XOR — condiciones vía govaluate, default flow, GatewayDirection |
+| Parallel Gateway | ✅ | AND — hilos divergentes + merge convergente |
+| Inclusive Gateway | ✅ | OR — todas las condiciones verdaderas se activan |
+| Event-Based Gateway | ✅ | Armed/resolved — primer evento gana, otros se descartan |
 
 ### Actividades
 | Elemento | Estado | Descripción |
 |---------|--------|-------------|
-| User Task | ✅ | Tarea humana con asignación |
-| Script Task | ✅ | Ejecución automática de script |
-| Service Task | ✅ | Llamada a servicio externo (cola async) |
+| User Task | ✅ | Tarea humana con assignee/grupos, soporta boundary timers + messages |
+| Script Task | ✅ | Ejecución govaluate: business_rule, change_field, assign_team, assign_user, add_related |
+| Service Task | ✅ | Llamada externa vía cola async |
+| Sub-Process (embebido) | ✅ | XML interno parseado, elementos aplanados con IDs prefijados, entry/exit routing |
+| Call Activity | ✅ | Carga proceso desde store, aplana con IDs prefijados, ejecuta, rutea de regreso al completar |
 
 ### Flujos
 | Elemento | Estado | Descripción |
 |---------|--------|-------------|
-| Sequence Flow | ✅ | Flujo por defecto entre elementos |
-| Conditional Flow | 🔄 | Flujo con expresión de condición |
+| Sequence Flow | ✅ | Elemento ejecutable con ExtensionData, flows sintéticos `_synth` |
+| Conditional Flow | ✅ | Via `conditionExpression` en SequenceFlow |
 | Default Flow | ✅ | Flujo de respaldo para compuertas |
+
+### Boundary Events
+| Elemento | Estado | Descripción |
+|---------|--------|-------------|
+| Timer (interrupting) | ✅ | Schedule cuando actividad inicia, fire → cancela actividad → rutea vía boundary |
+| Message (interrupting) | ✅ | Flow record creado cuando actividad inicia, encontrado por SendMessage |
+| Error | ✅ | Adjunto a sub-process, capturado vía búsqueda en scope padre |
 
 ---
 
@@ -708,7 +722,7 @@ CREATE INDEX idx_exec_log_instance ON execution_log(instance_id);
 
 ### Prerrequisitos
 
-- Go 1.23+
+- Go 1.26+
 - PostgreSQL 16+ (para producción)
 - Docker + Docker Compose (para pruebas)
 
@@ -754,21 +768,22 @@ go test -fuzz=Fuzz -fuzztime=30s ./pkg/bpmn/
 ```
 Paquete                          Cobertura
 ──────────────────────────────────────────
-config                           100.0%
 internal/element/flows           100.0%
-api/middleware                    92.9%
-internal/observability            92.9%
-internal/process                  89.3%
-internal/queue                    84.8%
-internal/engine                   81.4%
-internal/element/activities       80.5%
-internal/element/events           79.6%
-pkg/bpmn                          74.3%
-api/http                          70.6%
-pkg/store/memory                  57.2%
+pkg/store/memory                  90.8%
+internal/element/events           84.1%
+internal/element/gateways         80.6%
+pkg/bpmn                          79.4%
+config                            78.6%
+internal/queue                    78.0%
+internal/observability            73.7%
+internal/engine                   70.8%
+internal/element/activities       70.3%
+internal/process                  63.0%
+api/http                          60.8%
+api/middleware                    55.3%
 ```
 
-**100+ tests en total**, todos pasando con detector `-race`.
+**234+ tests en total**, ~75% cobertura promedio, todos pasando con detector `-race`.
 
 ---
 
@@ -856,30 +871,13 @@ func main() {
 | **CORS** | cors | `github.com/go-chi/cors` | Middleware CORS para chi |
 | **Prometheus** | client_golang | `github.com/prometheus/client_golang` | Métricas Prometheus oficiales |
 | **PostgreSQL** | pgx/v5 | `github.com/jackc/pgx/v5` | Driver DB de alto rendimiento |
-| **SQL Utils** | sqlx | `github.com/jmoiron/sqlx` | Named queries, struct scan |
-| **Migraciones** | go-migrate | `github.com/golang-migrate/migrate/v4` | Versionado de base de datos |
-| **Config** | viper | `github.com/spf13/viper` | Configuración YAML + env |
-| **CLI** | cobra | `github.com/spf13/cobra` | Interfaz de línea de comandos |
-| **Validación** | validator | `github.com/go-playground/validator/v10` | Validación basada en tags |
-| **JWT** | jwt-go | `github.com/golang-jwt/jwt/v5` | Autenticación |
+| **Env Config** | godotenv | `github.com/joho/godotenv` | Carga de archivos .env |
 | **UUID** | uuid | `github.com/google/uuid` | UUIDs RFC 4122 |
-| **Scheduler** | cron | `github.com/robfig/cron/v3` | Programación de eventos timer |
-| **Logger** | log/slog | `log/slog` (stdlib) | Logging estructurado (Go 1.21+) |
+| **Logger** | log/slog | `log/slog` (stdlib) | Logging estructurado |
 | **Context** | context | `context` (stdlib) | Cancelación, timeouts |
-| **Testing** | testify | `github.com/stretchr/testify` | Solo assertions |
+| **Rate Limit** | x/time/rate | `golang.org/x/time/rate` | Token bucket por IP |
+| **Expressions** | govaluate | `github.com/Knetic/govaluate` | Evaluación de condiciones BPMN |
 | **Docker Tests** | dockertest | `github.com/ory/dockertest/v3` | Contenedores para tests de integración |
-| **PNG Gen** | gg | `github.com/fogleman/gg` | Dibujo 2D para diagramas de proceso |
-| **Rate Limit** | tollbooth | `github.com/didip/tollbooth/v7` | Rate limiting de API |
-
-### No Usados
-
-| Biblioteca | Razón |
-|---------|--------|
-| Gin/Echo/Fiber | Demasiado "mágicos", chi es más idiomático |
-| GORM/ent | ORM pesado, preferir queries explícitas con pgx |
-| wire (Google DI) | Excesivo, funciones factory son suficientes |
-| zap/zerolog | slog (stdlib) cubre todas las necesidades |
-| go-kit | Demasiado complejo para un servicio standalone |
 
 ---
 
@@ -887,12 +885,12 @@ func main() {
 
 | Decisión | Elección | Racional |
 |----------|--------|-----------|
-| Lenguaje | Go 1.23+ | Concurrencia, rendimiento, binario único |
+| Lenguaje | Go 1.26+ | Concurrencia, rendimiento, binario único |
 | Sin ORM | pgx + sqlx | Queries explícitas, sin sorpresas N+1 |
 | Sin DI framework | Funciones factory | Go prefiere composición explícita |
 | Router | chi | Idiomático, sin overhead de reflexión |
 | Logger | slog (stdlib) | Sin dependencia externa necesaria |
-| Sin sub-procesos | Fuera de alcance | Reduce complejidad para v1 |
+| Sub-Process | ✅ Implementado | Sub-proceso embebido con flattening de elementos |
 | PostgreSQL | DB principal | JSONB, UUIDs, ecosistema maduro |
 | Alpine base | Docker | ~15MB imagen final, usuario non-root |
 

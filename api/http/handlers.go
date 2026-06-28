@@ -454,6 +454,45 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type sendSignalRequest struct {
+	SignalRef string         `json:"signal_ref"`
+	Variables map[string]any `json:"variables,omitempty"`
+}
+
+func (s *Server) sendSignal(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	var req sendSignalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.SignalRef == "" {
+		writeError(w, http.StatusBadRequest, "signal_ref is required")
+		return
+	}
+	if len(req.Variables) > 100 {
+		writeError(w, http.StatusBadRequest, "too many variables (max 100)")
+		return
+	}
+
+	if s.engine != nil {
+		go func() {
+			execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := s.engine.SendSignal(execCtx, req.SignalRef, req.Variables); err != nil {
+				s.logger.Error("signal broadcast failed", "error", err, "signal_ref", req.SignalRef)
+			}
+		}()
+	}
+
+	s.logger.Info("signal sent", "signal_ref", req.SignalRef)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"signal_ref": req.SignalRef,
+		"status":     "broadcast",
+	})
+}
+
 func (s *Server) getCSRFToken(w http.ResponseWriter, r *http.Request) {
 	token, err := middleware.GenerateCSRFToken()
 	if err != nil {

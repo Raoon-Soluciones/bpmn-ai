@@ -20,7 +20,9 @@ import (
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/queue"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
+	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/store/memory"
+	pgstore "github.com/Raoon-Soluciones/bpmn-ai/pkg/store/sql"
 )
 
 func main() {
@@ -37,7 +39,14 @@ func main() {
 
 	metrics := observability.DefaultMetrics()
 
-	store := memory.NewStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := getStore(ctx, &cfg, logger)
+	if store == nil {
+		logger.Error("no store available")
+		os.Exit(1)
+	}
 
 	dispatcher := observability.NewDispatcher()
 	auditWriter, err := observability.NewFileAuditWriter(cfg.Audit.Dir, cfg.Audit.Enabled, logger)
@@ -54,9 +63,6 @@ func main() {
 		PollInterval: cfg.Engine.QueuePollInterval,
 	}).WithDispatcher(dispatcher)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	registry := engine.NewElementRegistry()
 	registry.Register(bpmn.ElementTypeStartEvent, events.NewStartEvent)
 	registry.Register(bpmn.ElementTypeEndEvent, events.NewEndEvent)
@@ -72,6 +78,12 @@ func main() {
 	registry.Register(bpmn.ElementTypeScriptTask, activities.NewScriptTask)
 	registry.Register(bpmn.ElementTypeServiceTask, activities.NewServiceTask)
 	registry.Register(bpmn.ElementTypeSequenceFlow, flows.NewSequenceFlow)
+	registry.Register(bpmn.ElementTypeSubProcess, activities.NewSubProcess)
+	registry.Register(bpmn.ElementTypeErrorCatch, events.NewErrorCatchEvent)
+	registry.Register(bpmn.ElementTypeErrorEnd, events.NewErrorEndEvent)
+	registry.Register(bpmn.ElementTypeCallActivity, activities.NewCallActivity)
+	registry.Register(bpmn.ElementTypeSignalThrow, events.NewSignalThrowEvent)
+	registry.Register(bpmn.ElementTypeSignalCatch, events.NewSignalCatchEvent)
 
 	eng := engine.New(engine.Config{
 		WorkerCount:      cfg.Engine.WorkerCount,
@@ -120,4 +132,17 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+func getStore(ctx context.Context, cfg *config.Config, logger *observability.Logger) store.Store {
+	if cfg.Database.URL != "" {
+		s, err := pgstore.NewStore(ctx, cfg.Database.URL)
+		if err == nil {
+			logger.Info("using PostgreSQL store", "database_url", cfg.Database.URL)
+			return s
+		}
+		logger.Info("failed to connect to PostgreSQL, falling back to in-memory", "error", err)
+	}
+	logger.Info("using in-memory store")
+	return memory.NewStore()
 }

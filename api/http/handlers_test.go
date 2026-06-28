@@ -26,6 +26,7 @@ func (noopEngine) Registry() *engine.ElementRegistry                            
 func (noopEngine) Run(_ context.Context, _ *process.Instance) error                    { return nil }
 func (noopEngine) Continue(_ context.Context, _, _ string, _ map[string]any) error     { return nil }
 func (noopEngine) SendMessage(_ context.Context, _, _ string, _ map[string]any) error  { return nil }
+func (noopEngine) SendSignal(_ context.Context, _ string, _ map[string]any) ([]string, error) { return nil, nil }
 func (n noopEngine) WithDispatcher(_ *observability.Dispatcher) engine.Engine          { return n }
 func (noopEngine) JobHandler() queue.JobHandler                                          { return nil }
 

@@ -31,7 +31,6 @@ func (e *MessageCatchEvent) Type() bpmn.ElementType {
 
 func (e *MessageCatchEvent) Execute(_ context.Context, execCtx element.ExecutionContext) element.ExecutionResult {
 	flow := execCtx.Flow()
-	flow.Status = "COMPLETED"
 
 	if e.eventDef.MessageRef != "" {
 		execCtx.SetVariable("expected_message", e.eventDef.MessageRef)

@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"strings"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
 	"github.com/Raoon-Soluciones/bpmn-ai/pkg/bpmn"
@@ -84,6 +85,18 @@ func (e *EndEvent) Execute(_ context.Context, execCtx element.ExecutionContext) 
 		}
 	}
 	flow.Status = store.FlowStatusCompleted
+
+	// Check if this end event is a sub-process exit
+	elemDef, ok := execCtx.Element()
+	if ok && elemDef.ExtensionData != nil {
+		if exitStr, exists := elemDef.ExtensionData["subprocess_exit_flows"]; exists && exitStr != "" {
+			return element.ExecutionResult{
+				Action:      element.ActionRoute,
+				FlowData:    flow,
+				FlowFilters: strings.Split(exitStr, ","),
+			}
+		}
+	}
 
 	return element.ExecutionResult{
 		Action:   element.ActionComplete,

@@ -266,3 +266,73 @@ func TestServiceTask_Execute(t *testing.T) {
 		t.Errorf("expected ActionQueue, got %s", result.Action)
 	}
 }
+
+func TestSubProcess_Execute(t *testing.T) {
+	elem := bpmn.Element{
+		ID: "sp-1", Name: "Sub Process",
+		SubProcess:    &bpmn.Process{ID: "sp-1"},
+		SubProcessEnd: "sp-1.end-1",
+	}
+	s, err := NewSubProcess(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.ID() != "sp-1" {
+		t.Errorf("expected ID sp-1, got %s", s.ID())
+	}
+	if s.Type() != bpmn.ElementTypeSubProcess {
+		t.Errorf("expected type subProcess, got %s", s.Type())
+	}
+	result := s.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "sp-1"},
+	})
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute, got %s", result.Action)
+	}
+	if len(result.FlowFilters) != 1 || result.FlowFilters[0] != "sp-1_sp_entry" {
+		t.Errorf("expected FlowFilters [sp-1_sp_entry], got %v", result.FlowFilters)
+	}
+}
+
+func TestCallActivity_Execute_WithCalledElement(t *testing.T) {
+	elem := bpmn.Element{
+		ID: "call-1", Name: "Call Activity",
+		CalledElement: "called-proc",
+	}
+	ca, err := NewCallActivity(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ca.ID() != "call-1" {
+		t.Errorf("expected ID call-1, got %s", ca.ID())
+	}
+	if ca.Type() != bpmn.ElementTypeCallActivity {
+		t.Errorf("expected type callActivity, got %s", ca.Type())
+	}
+	result := ca.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "call-1"},
+	})
+	if result.Action != element.ActionCallActivity {
+		t.Errorf("expected ActionCallActivity, got %s", result.Action)
+	}
+	if result.CalledElement != "called-proc" {
+		t.Errorf("expected CalledElement=called-proc, got %s", result.CalledElement)
+	}
+}
+
+func TestCallActivity_Execute_NoCalledElement(t *testing.T) {
+	elem := bpmn.Element{
+		ID: "call-1", Name: "Call Activity",
+		CalledElement: "",
+	}
+	ca, err := NewCallActivity(elem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := ca.Execute(context.Background(), &mockExecCtx{
+		flow: &store.FlowRecord{ElementID: "call-1"},
+	})
+	if result.Action != element.ActionRoute {
+		t.Errorf("expected ActionRoute for empty calledElement, got %s", result.Action)
+	}
+}

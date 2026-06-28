@@ -16,6 +16,7 @@ type EngineStore interface {
 	// Instance
 	GetInstance(ctx context.Context, id string) (*store.InstanceRecord, error)
 	UpdateInstance(ctx context.Context, inst *store.InstanceRecord) error
+	ListInstances(ctx context.Context, status store.InstanceStatus) ([]*store.InstanceRecord, error)
 
 	// Flow
 	CreateFlow(ctx context.Context, flow *store.FlowRecord) error

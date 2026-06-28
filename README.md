@@ -50,7 +50,7 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 ### Phase 1: Foundation ✅
 - Domain types, BPMN XML parser
 - Store interface + in-memory implementation
-- State machine with 8 states and valid transitions
+- State machine with 7 states and valid transitions
 - Configuration system + structured logging (slog)
 
 ### Phase 2: Execution Loop ✅
@@ -62,7 +62,7 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 
 ### Phase 3: Elements ✅
 - **Activities**: UserTask, ScriptTask, ServiceTask
-- **Events**: TimerEvent, MessageThrowEvent, MessageCatchEvent, TerminateEvent
+- **Events**: TimerEvent, MessageThrowEvent, MessageCatchEvent, TerminateEvent, ErrorEndEvent, ErrorCatchEvent
 - **Gateways**: InclusiveGateway, EventBasedGateway
 
 ### Phase 4: Queue & Async ✅
@@ -88,6 +88,7 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 - XXE-safe XML parser
 - BPMN condition expression evaluation (govaluate)
 - Converging ParallelGateway (waits for all incoming branches)
+- Sub-Process support — embedded sub-processes flattened with prefixed IDs, synthetic entry flows, exit routing via end event
 - SequenceFlow as executable element — factory populates from ExtensionData, router routes through flow elements
 - ScriptTask with real script execution — business_rule, change_field, assign_team, assign_user, add_related script types
 - TimerEvent with ISO 8601 duration & cron parsing — ContinueAt field schedules auto-continue via job queue
@@ -96,7 +97,7 @@ All 6 phases of the rewrite plan are **complete** and **production-ready**.
 - GatewayDirection — parsed from XML and used in divergence/convergence logic of all gateways
 - Parser fix — intermediateCatchEvent/boundaryEvent now map to correct element type based on event definition
 - Race-detector clean throughout
-- 100+ tests, all passing
+- 234+ tests, all passing
 
 ---
 
@@ -148,7 +149,7 @@ docker-compose up -d
 │  │ Events  │ │ Gateways │ │Activities│ │    Flows     │    │
 │  │ Start   │ │ Parallel │ │ UserTask │ │  Sequence    │    │
 │  │ End     │ │ Exclusive│ │ScriptTask│ │              │    │
-│  │ Timer   │ │Inclusive │ │SrvceTask │ │              │    │
+│  │ Timer   │ │Inclusive │ │SvcTask   │ │              │    │
 │  │ Message │ │EventBased│ │          │ │              │    │
 │  │Term     │ │          │ │          │ │              │    │
 │  └─────────┘ └──────────┘ └──────────┘ └──────────────┘    │
@@ -282,31 +283,44 @@ PENDING ──→ RUNNING ──→ COMPLETED
 | Start Event | ✅ | Process entry point |
 | End Event | ✅ | Process completion |
 | Terminate Event | ✅ | Immediate process termination |
-| Timer Event | ✅ | Time-based triggers (duration, date, cycle) |
-| Message Throw Event | ✅ | Send message |
-| Message Catch Event | ✅ | Wait for message |
+| Timer Event | ✅ | ISO 8601 duration, date, cron — auto-continue via job queue |
+| Message Throw Event | ✅ | Send message via `POST /api/v1/messages` |
+| Message Catch Event | ✅ | Wait for message, correlated by instanceID + messageRef |
+| Error End Event | ✅ | Throw error with error code, caught by boundary handler |
+| Error Catch Event | ✅ | Catch errors on sub-process (boundary) or event sub-process (start) |
+| Signal Throw Event | ✅ | Broadcast signal to all waiting instances |
+| Signal Catch Event | ✅ | Wait for broadcast signal from any instance |
 
 ### Gateways
 | Element | Status | Description |
 |---------|--------|-------------|
-| Exclusive Gateway | ✅ | XOR — route to first matching condition |
-| Parallel Gateway | ✅ | AND — route to all branches / wait for all |
-| Inclusive Gateway | ✅ | OR — route to all matching conditions |
-| Event-Based Gateway | ✅ | Route based on which event occurs first |
+| Exclusive Gateway | ✅ | XOR — conditions via govaluate, default flow, GatewayDirection |
+| Parallel Gateway | ✅ | AND — diverging threads + converging merge |
+| Inclusive Gateway | ✅ | OR — all matching conditions activate |
+| Event-Based Gateway | ✅ | Armed/resolved — first event wins, others drop |
 
 ### Activities
 | Element | Status | Description |
 |---------|--------|-------------|
-| User Task | ✅ | Human task with assignment |
-| Script Task | ✅ | Automated script execution |
-| Service Task | ✅ | External service call (async queue) |
+| User Task | ✅ | Human task with assignee/groups, supports interrupting boundary timers + messages |
+| Script Task | ✅ | govaluate execution: business_rule, change_field, assign_team, assign_user, add_related |
+| Service Task | ✅ | External call via async job queue |
+| Sub-Process (embedded) | ✅ | Inner XML parsed, elements flattened with prefixed IDs, synthetic entry/exit routing |
+| Call Activity | ✅ | Loads called process from store, flattens with prefixed IDs, executes, routes back on completion |
 
 ### Flows
 | Element | Status | Description |
 |---------|--------|-------------|
-| Sequence Flow | ✅ | Default flow between elements |
-| Conditional Flow | 🔄 | Flow with condition expression |
+| Sequence Flow | ✅ | Executable element with ExtensionData, synthetic `_synth` flows |
+| Conditional Flow | ✅ | Via SequenceFlow `conditionExpression` attribute |
 | Default Flow | ✅ | Fallback flow for gateways |
+
+### Boundary Events
+| Element | Status | Description |
+|---------|--------|-------------|
+| Timer (interrupting) | ✅ | Scheduled when activity starts, fires → cancels activity → routes via boundary |
+| Message (interrupting) | ✅ | Flow record created when activity starts, found by SendMessage |
+| Error | ✅ | Attached to sub-process, caught via parent scope search |
 
 ---
 
@@ -340,6 +354,7 @@ PENDING ──→ RUNNING ──→ COMPLETED
 | POST | `/api/v1/tasks/{id}/claim` | Claim task |
 | POST | `/api/v1/tasks/{id}/complete` | Complete task |
 | POST | `/api/v1/messages` | Send message to waiting MessageCatch instance |
+| POST | `/api/v1/signals` | Broadcast signal to all waiting SignalCatch instances |
 | GET | `/api/v1/cases/{id}/history` | Execution history |
 | GET | `/api/v1/cases/{id}/diagram` | Process diagram |
 
@@ -756,21 +771,22 @@ go test -fuzz=Fuzz -fuzztime=30s ./pkg/bpmn/
 ```
 Package                          Coverage
 ──────────────────────────────────────────
-config                           100.0%
 internal/element/flows           100.0%
-api/middleware                    92.9%
-internal/observability            92.9%
-internal/process                  89.3%
-internal/queue                    84.8%
-internal/engine                   81.4%
-internal/element/activities       80.5%
-internal/element/events           79.6%
-pkg/bpmn                          74.3%
-api/http                          70.6%
-pkg/store/memory                  57.2%
+pkg/store/memory                  90.8%
+internal/element/events           84.1%
+internal/element/gateways         80.6%
+pkg/bpmn                          79.4%
+config                            78.6%
+internal/queue                    78.0%
+internal/observability            73.7%
+internal/engine                   70.8%
+internal/element/activities       70.3%
+internal/process                  63.0%
+api/http                          60.8%
+api/middleware                    55.3%
 ```
 
-**110+ tests total**, all passing with `-race` detector.
+**234+ tests total**, ~75% average coverage, all passing with `-race` detector.
 
 ---
 
@@ -858,31 +874,13 @@ func main() {
 | **CORS** | cors | `github.com/go-chi/cors` | CORS middleware for chi |
 | **Prometheus** | client_golang | `github.com/prometheus/client_golang` | Official Prometheus metrics |
 | **PostgreSQL** | pgx/v5 | `github.com/jackc/pgx/v5` | High-performance DB driver |
-| **SQL Utils** | sqlx | `github.com/jmoiron/sqlx` | Named queries, struct scan |
-| **Migrations** | go-migrate | `github.com/golang-migrate/migrate/v4` | Database versioning |
-| **Config** | viper | `github.com/spf13/viper` | YAML + env configuration |
-| **CLI** | cobra | `github.com/spf13/cobra` | Command-line interface |
-| **Validation** | validator | `github.com/go-playground/validator/v10` | Tag-based validation |
-| **JWT** | jwt-go | `github.com/golang-jwt/jwt/v5` | Authentication |
+| **Env Config** | godotenv | `github.com/joho/godotenv` | .env file loading |
 | **UUID** | uuid | `github.com/google/uuid` | RFC 4122 UUIDs |
-| **Scheduler** | cron | `github.com/robfig/cron/v3` | Timer event scheduling |
-| **Logger** | log/slog | `log/slog` (stdlib) | Structured logging (Go 1.21+) |
+| **Logger** | log/slog | `log/slog` (stdlib) | Structured logging |
 | **Context** | context | `context` (stdlib) | Cancellation, timeouts |
-| **Testing** | testify | `github.com/stretchr/testify` | Assertions only |
+| **Rate Limit** | x/time/rate | `golang.org/x/time/rate` | Per-IP token bucket |
+| **Expressions** | govaluate | `github.com/Knetic/govaluate` | BPMN condition evaluation |
 | **Docker Tests** | dockertest | `github.com/ory/dockertest/v3` | Integration test containers |
-| **PNG Gen** | gg | `github.com/fogleman/gg` | 2D drawing for process diagrams |
-| **Expressions** | govaluate | `github.com/Knetic/govaluate` | BPMN condition evaluation in gateways |
-| **Rate Limit** | x/time/rate | `golang.org/x/time/rate` | Per-IP token bucket (stdlib-adjacent) |
-
-### Not Used
-
-| Library | Reason |
-|---------|--------|
-| Gin/Echo/Fiber | Too "magical", chi is more idiomatic |
-| GORM/ent | ORM heavy, prefer explicit queries with pgx |
-| wire (Google DI) | Overkill, factory functions are sufficient |
-| zap/zerolog | slog (stdlib) covers all needs |
-| go-kit | Too complex for a standalone service |
 
 ---
 
@@ -895,7 +893,7 @@ func main() {
 | No DI framework | Factory functions | Go prefers explicit composition |
 | Router | chi | Idiomatic, no reflection overhead |
 | Logger | slog (stdlib) | No external dependency needed |
-| No sub-processes | Out of scope | Reduces complexity for v1 |
+| Sub-Process | ✅ Implemented | Embedded sub-process with element flattening |
 | PostgreSQL | Primary DB | JSONB, UUIDs, mature ecosystem |
 | Alpine base | Docker | ~15MB final image, non-root user |
 

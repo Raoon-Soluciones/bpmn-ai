@@ -569,3 +569,43 @@ func TestParallelGateway_Conditions(t *testing.T) {
 		t.Error("expected nil conditions")
 	}
 }
+
+func TestCheckAndResolve_FirstCallWins(t *testing.T) {
+	vars := map[string]any{
+		"eventbased_gateway_armed":    "gw-eb",
+		"eventbased_gateway_resolved": false,
+		"eventbased_winning_element":  "",
+	}
+	execCtx := &mockExecCtx{variables: vars}
+
+	// First call should win
+	if !CheckAndResolve(execCtx, "timer-1") {
+		t.Error("expected first call to return true")
+	}
+	if vars["eventbased_winning_element"] != "timer-1" {
+		t.Errorf("expected winning_element=timer-1, got %v", vars["eventbased_winning_element"])
+	}
+
+	// Second call with different element should lose
+	if CheckAndResolve(execCtx, "msg-1") {
+		t.Error("expected second call to return false")
+	}
+
+	// Second call with winning element should pass
+	if !CheckAndResolve(execCtx, "timer-1") {
+		t.Error("expected winning element to return true")
+	}
+}
+
+func TestCheckAndResolve_NoArmedGateway(t *testing.T) {
+	vars := map[string]any{
+		"eventbased_gateway_armed":    "",
+		"eventbased_gateway_resolved": false,
+		"eventbased_winning_element":  "",
+	}
+	execCtx := &mockExecCtx{variables: vars}
+
+	if !CheckAndResolve(execCtx, "any-element") {
+		t.Error("expected true when no armed gateway")
+	}
+}

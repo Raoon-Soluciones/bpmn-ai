@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/error">
+  <process id="proc-error" name="Error Event Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <subProcess id="sp-1" name="Error Sub-Process">
+      <startEvent id="sp-start" name="Sub Start"/>
+      <userTask id="sp-task" name="Task That Fails" assignee="user-1"/>
+      <endEvent id="sp-error-end" name="Throw Error">
+        <errorEventDefinition errorRef="err-001"/>
+      </endEvent>
+      <sequenceFlow id="sp-flow-1" sourceRef="sp-start" targetRef="sp-task"/>
+      <sequenceFlow id="sp-flow-2" sourceRef="sp-task" targetRef="sp-error-end"/>
+    </subProcess>
+    <boundaryEvent id="error-catch-1" attachedToRef="sp-1">
+      <errorEventDefinition errorRef="err-001"/>
+    </boundaryEvent>
+    <userTask id="task-error" name="Error Handler" assignee="user-2"/>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="sp-1"/>
+    <sequenceFlow id="flow-catch" sourceRef="error-catch-1" targetRef="task-error"/>
+    <sequenceFlow id="flow-after" sourceRef="task-error" targetRef="end-1"/>
+    <sequenceFlow id="flow-sp-out" sourceRef="sp-1" targetRef="end-1"/>
+  </process>
+  <error id="err-001" name="MyError" errorCode="ERR_001"/>
+</definitions>

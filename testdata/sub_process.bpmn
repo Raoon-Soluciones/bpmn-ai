@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://example.com/subprocess">
+  <process id="proc-sub" name="Sub-Process Test" isExecutable="true">
+    <startEvent id="start-1" name="Start"/>
+    <subProcess id="sp-1" name="My Sub-Process">
+      <startEvent id="sp-start" name="Sub Start"/>
+      <userTask id="sp-task" name="Sub Task" assignee="user-1"/>
+      <endEvent id="sp-end" name="Sub End"/>
+      <sequenceFlow id="sp-flow-1" sourceRef="sp-start" targetRef="sp-task"/>
+      <sequenceFlow id="sp-flow-2" sourceRef="sp-task" targetRef="sp-end"/>
+    </subProcess>
+    <endEvent id="end-1" name="End"/>
+    <sequenceFlow id="flow-1" sourceRef="start-1" targetRef="sp-1"/>
+    <sequenceFlow id="flow-2" sourceRef="sp-1" targetRef="end-1"/>
+  </process>
+</definitions>

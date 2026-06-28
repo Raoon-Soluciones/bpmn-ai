@@ -262,3 +262,160 @@ func TestStore_Reset(t *testing.T) {
 		t.Errorf("expected 0 instances after reset, got %d", len(insts))
 	}
 }
+
+func TestStore_UpdateJob(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	job := &store.JobRecord{ID: "uj-1", InstanceID: "c-1", Type: "test", Status: store.JobStatusPending}
+	if err := s.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	job.Status = store.JobStatusCompleted
+	now := time.Now()
+	job.ExecutedAt = &now
+	if err := s.UpdateJob(ctx, job); err != nil {
+		t.Fatalf("update job: %v", err)
+	}
+	got, err := s.GetJob(ctx, "uj-1")
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.Status != store.JobStatusCompleted {
+		t.Errorf("expected COMPLETED, got %s", got.Status)
+	}
+	if got.ExecutedAt == nil || got.ExecutedAt.IsZero() {
+		t.Error("expected non-zero ExecutedAt")
+	}
+}
+
+func TestStore_Threads(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	// Create flow first (needed for thread)
+	flow := &store.FlowRecord{ID: "tf-1", InstanceID: "c-1", ElementID: "s1", ElementType: bpmn.ElementTypeStartEvent, ThreadID: 1}
+	if err := s.CreateFlow(ctx, flow); err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+
+	thread := &store.ThreadRecord{
+		InstanceID:  "c-1",
+		ThreadIndex: 1,
+		ParentIndex: nil,
+		FlowID:      "tf-1",
+	}
+	if err := s.CreateThread(ctx, thread); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	threads, err := s.GetThreadsByInstance(ctx, "c-1")
+	if err != nil {
+		t.Fatalf("get threads: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("expected 1 thread, got %d", len(threads))
+	}
+	if threads[0].ThreadIndex != 1 {
+		t.Errorf("expected ThreadIndex=1, got %d", threads[0].ThreadIndex)
+	}
+
+	// UpdateThread
+	parentIdx := 0
+	threads[0].ParentIndex = &parentIdx
+	if err := s.UpdateThread(ctx, threads[0]); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+
+	// CloseThread
+	if err := s.CloseThread(ctx, "c-1", 1); err != nil {
+		t.Fatalf("close thread: %v", err)
+	}
+}
+
+func TestStore_DeadLetters(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	dl := &store.DeadLetterRecord{
+		ID:           "dl-1",
+		InstanceID:   "c-1",
+		JobID:        "j-1",
+		Type:         "test",
+		Payload:      map[string]any{"err": "fail"},
+		ErrorMessage: "something went wrong",
+		RetryCount:   3,
+	}
+	if err := s.CreateDeadLetter(ctx, dl); err != nil {
+		t.Fatalf("create dead letter: %v", err)
+	}
+
+	got, err := s.GetDeadLetter(ctx, "dl-1")
+	if err != nil {
+		t.Fatalf("get dead letter: %v", err)
+	}
+	if got.ErrorMessage != "something went wrong" {
+		t.Errorf("expected 'something went wrong', got %s", got.ErrorMessage)
+	}
+	if got.Payload["err"] != "fail" {
+		t.Errorf("expected payload err=fail, got %v", got.Payload["err"])
+	}
+
+	byInstance, err := s.GetDeadLetters(ctx, "c-1")
+	if err != nil {
+		t.Fatalf("get dead letters by instance: %v", err)
+	}
+	if len(byInstance) != 1 {
+		t.Errorf("expected 1 dead letter, got %d", len(byInstance))
+	}
+
+	list, err := s.ListDeadLetters(ctx, 10)
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(list) < 1 {
+		t.Errorf("expected at least 1 dead letter")
+	}
+}
+
+func TestStore_ListProcesses(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	s.SaveProcess(ctx, &bpmn.Process{ID: "lp-1", Name: "LP 1", Elements: make(map[string]bpmn.Element), Flows: make(map[string]bpmn.Flow)})
+	s.SaveProcess(ctx, &bpmn.Process{ID: "lp-2", Name: "LP 2", Elements: make(map[string]bpmn.Element), Flows: make(map[string]bpmn.Flow)})
+
+	procs, err := s.ListProcesses(ctx)
+	if err != nil {
+		t.Fatalf("list processes: %v", err)
+	}
+	if len(procs) < 2 {
+		t.Errorf("expected at least 2 processes, got %d", len(procs))
+	}
+}
+
+func TestStore_ListInstancesWithFilter(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	s.CreateInstance(ctx, &store.InstanceRecord{ID: "li-1", Status: store.InstanceStatusCreated})
+	s.CreateInstance(ctx, &store.InstanceRecord{ID: "li-2", Status: store.InstanceStatusInProgress})
+
+	all, err := s.ListInstances(ctx, "")
+	if err != nil {
+		t.Fatalf("list all instances: %v", err)
+	}
+	if len(all) < 2 {
+		t.Errorf("expected at least 2 instances, got %d", len(all))
+	}
+
+	created, err := s.ListInstances(ctx, store.InstanceStatusCreated)
+	if err != nil {
+		t.Fatalf("list created instances: %v", err)
+	}
+	for _, inst := range created {
+		if inst.Status != store.InstanceStatusCreated {
+			t.Errorf("expected CREATED, got %s", inst.Status)
+		}
+	}
+}

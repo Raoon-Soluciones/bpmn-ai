@@ -32,12 +32,28 @@ Standalone BPMN 2.0 execution engine written in Go. High-performance, production
 
 ## Supported BPMN elements
 
-| Category | Elements |
-|---|---|
-| **Events** | StartEvent, EndEvent, TerminateEvent, TimerEvent, MessageThrow, MessageCatch |
-| **Gateways** | ExclusiveGateway, ParallelGateway, InclusiveGateway, EventBasedGateway |
-| **Activities** | UserTask, ScriptTask, ServiceTask |
-| **Flows** | SequenceFlow |
+| Category | Elements | Notes |
+|---|---|---|
+| **Events** | StartEvent, EndEvent, TerminateEvent | Basic events |
+| | TimerEvent | ISO 8601 duration, date, cron. Auto-continue via job queue |
+| | MessageThrow, MessageCatch | HTTP `POST /api/v1/messages` endpoint, instance+messageRef correlation |
+| | ErrorEndEvent | Throws error (endEvent or intermediateThrowEvent + errorEventDefinition) |
+|               | ErrorCatchEvent (boundary)  | Catches errors on sub-process scope. Also for error startEvent |
+|               | SignalThrowEvent            | Broadcast signal via `signal_ref`. Pass-through to next flow |
+|               | SignalCatchEvent            | Waits for broadcast signal. Found by `SendSignal()` across all instances |
+| **Gateways** | ExclusiveGateway | govaluate conditions, default flow, GatewayDirection |
+| | ParallelGateway | Thread creation, convergence tracking |
+| | InclusiveGateway | Multiple condition paths, GatewayDirection |
+| | EventBasedGateway | Armed/resolved tracking, first event wins |
+| **Activities** | UserTask | Assignee/groups, WAITING state, interrupting boundary events |
+| | ScriptTask | govaluate: business_rule, change_field, assign_team, assign_user, add_related |
+| | ServiceTask | Async via JobQueue |
+| | Sub-Process (embedded) | Inner XML parsed recursively, flattened with prefixed IDs, synthetic entry flow, exit routing |
+| | CallActivity | Loads called process from store, flattens with `ca-{id}.` prefix, synthetic entry flow, executes internal, routes back on completion |
+| **Flows** | SequenceFlow | Executable element, synthetic `_synth` flows for routing continuity |
+| **Boundary Events** | Timer (interrupting) | Scheduled when activity starts, fires → cancels → routes via boundary output |
+| | Message (interrupting) | Flow record created when activity starts, found by SendMessage |
+| | Error | Attached to sub-process, caught via findErrorCatch |
 
 ## State machine
 
@@ -60,6 +76,9 @@ CREATED → IN_PROGRESS → COMPLETED
 - **Prometheus** — official `client_golang` for metrics
 - **Factory pattern** — `ElementRegistry.Register()` for element types, never hardcode
 - **Iterative execution** — goroutine workers + channels, no recursion
+- **Sub-process flattening** — sub-process XML parsed via `parseSubProcessXML()` (avoids recursion through `Parse()` which would cause infinite loop). Elements flattened into parent process with `{parentID}.{childID}` prefix
+- **Error resolution** — errors propagate via `ActionThrowError` → engine finds parent sub-process via ID prefix → searches for matching `ErrorCatchEvent` by `AttachedToRef` + error code
+- **Boundary scheduling** — when an element returns `ActionForm`/`ActionWait`, `scheduleBoundaryTimers()` checks all elements with `AttachedToRef == currentID` and creates flow records + jobs for timer/message boundary events
 
 ## How to verify changes
 
@@ -85,6 +104,8 @@ make tidy
 
 After any changes, run `go test -race -count=1 ./internal/... ./pkg/... ./api/... ./config/...` to verify.
 
+> **Note:** The `-race` flag requires `CGO_ENABLED=1` and a C compiler. On Windows without cgo, use `go test -count=1 ./...`.
+
 ## Configuration
 
 Engine is configured via `config/` package with YAML + environment variables. Key settings:
@@ -105,3 +126,9 @@ Engine is configured via `config/` package with YAML + environment variables. Ke
 - UserTask uses `ActionForm` — instance transitions to `WAITING` state until task is completed externally.
 - ParallelGateway creates new threads for each branch — thread index formula: `parentThreadIdx * 10 + branchIndex + 1`.
 - The in-memory store (`pkg/store/memory/`) is for testing only — production uses PostgreSQL via `pkg/store/sql/`.
+- **Sub-Process**: Inner XML parsed via `xml:",innerxml"`, elements flattened with `{subID}.{origID}` prefix. Synthetic entry flow `{id}_sp_entry` routes into the sub-process. Exit routing via `subprocess_exit_flows` on the internal end event's ExtensionData.
+- **Error Events**: `ErrorEndEvent` returns `ActionThrowError`. Engine searches for matching `ErrorCatchEvent` via `AttachedToRef` on parent sub-process. `parentSubProcessID()` extracts parent from element ID prefix (e.g., `sp-1.error-end-1` → `sp-1`).
+- **Boundary Events**: `scheduleBoundaryTimers()` creates flow records + timer jobs when an activity enters WAITING. Also creates active flow records for message catch boundaries (found by `SendMessage()`). Interrupting boundaries cancel attached activity flows via `cancelAttachedFlows()`. Non-interrupting (`cancelActivity="false"`) fire without cancellation. Error boundaries on sub-processes and activities found by `findErrorCatch()` (searches by `AttachedToRef` + error code match).
+- **Call Activity**: Parses `calledElement` attribute. When executed, the engine loads the called process from the store, flattens its elements with `ca-{id}.` prefix, creates a synthetic entry flow, executes the called process, and routes back to the CallActivity's outgoing flows on completion.
+- The `CalculateSchedule` function in `internal/element/events/timer.go` is exported for use by the engine's `scheduleBoundaryTimers`.
+- `findErrorCatch()` searches by `AttachedToRef` + error code match. Empty error code catches all errors.

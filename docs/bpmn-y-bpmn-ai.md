@@ -113,7 +113,7 @@ Conectan los elementos entre sí.
 │  │ Eventos  │  │ Gateways  │  │Activities│  │   Flows      │   │
 │  │ Start    │  │ Parallel  │  │ UserTask │  │ SequenceFlow │   │
 │  │ End      │  │ Exclusive │  │ScriptTask│  │              │   │
-│  │ Timer    │  │ Inclusive │  │ServiceTsk│  │              │   │
+│  │ Timer    │  │ Inclusive │  │SvcTask   │  │              │   │
 │  │ Message  │  │EventBased │  │          │  │              │   │
 │  │Terminate │  │           │  │          │  │              │   │
 │  └──────────┘  └───────────┘  └──────────┘  └──────────────┘   │
@@ -236,7 +236,7 @@ Transiciones válidas:
 
 ### 2.7 API HTTP
 
-14 endpoints con `chi/v5`:
+17 endpoints API con `chi/v5`:
 
 | Método | Endpoint                        | Descripción                    |
 |--------|---------------------------------|--------------------------------|
@@ -251,10 +251,12 @@ Transiciones válidas:
 | GET    | `/api/v1/cases`                 | Listar casos                   |
 | GET    | `/api/v1/cases/{id}`            | Detalle del caso               |
 | GET    | `/api/v1/cases/{id}/tasks`      | Tareas pendientes              |
-| GET    | `/api/v1/cases/{id}/history`    | Historial de ejecución         |
-| GET    | `/api/v1/cases/{id}/diagram`    | Metadatos del diagrama         |
 | POST   | `/api/v1/tasks/{id}/claim`      | Reclamar tarea                 |
 | POST   | `/api/v1/tasks/{id}/complete`   | Completar tarea                |
+| GET    | `/api/v1/cases/{id}/history`    | Historial de ejecución         |
+| GET    | `/api/v1/cases/{id}/diagram`    | Metadatos del diagrama         |
+| POST   | `/api/v1/messages`              | Enviar mensaje a instancia     |
+| POST   | `/api/v1/signals`               | Broadcast de señal a instancias|
 
 Middleware global: RealIP, RequestID, Recovery, CORS, RequestLogger, RateLimiter (10 req/s, burst 20). CSRF en subrouter `/api/v1`.
 
@@ -335,8 +337,12 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
 | **Actividades** | UserTask                    | ✅     | Asignación a usuario/grupo vía `assignee`/`candidateUsers`/`candidateGroups`. Transición a WAITING hasta completación externa. |
 |                 | ScriptTask                  | ✅     | Ejecución real de scripts con govaluate. Tipos: `business_rule` (evalúa booleano), `change_field` (parsea `key=value`), `assign_team`/`assign_user`/`add_related` (establece variable). `scriptBody` y `scriptType` desde atributos XML. |
 |                 | ServiceTask                 | ✅     | Ejecución asíncrona vía `ActionQueue`: job encolado, el proceso continúa sin esperar. |
+|                 | **Sub-Process**             | ✅     | Sub-proceso embebido: XML interno parseado recursivamente, elementos aplanados con IDs prefijados (ej. `sp-1.start-1`). Flow de entrada sintético del sub-process al start event interno. Ruteo de salida vía `subprocess_exit_flows` en el ExtensionData del end event. |
+|                 | **Call Activity**           | ✅     | Atributo `calledElement`, carga proceso desde store, aplana con `ca-{id}.` prefix, entry flow sintético, ejecuta proceso llamado, rutea de regreso a outgoing flows al completar. |
+|                 | **SignalThrowEvent**        | ✅     | Broadcast de `signal_ref`, pasa al siguiente flow. Enviado vía `POST /api/v1/signals`. |
+|                 | **SignalCatchEvent**        | ✅     | Espera señal broadcast. Reanudado por `SendSignal()` que busca en todas las instancias activas. |
 | **Flujos**      | SequenceFlow                | ✅     | Elemento ejecutable de primera clase: factory pobla `sourceRef`/`targetRef`/`condition`/`isDefault` desde `ExtensionData`. El router enruta a través de elementos flow directamente. Flow sintético (`_synth`) creado durante el parseo para continuidad de ruteo. |
-|                 | Conditional Flow            | 🔄     | Expresión en el sequence flow                         |
+|                 | Conditional Flow            | ✅     | Via `conditionExpression` en SequenceFlow             |
 |                 | Default Flow                | ✅     | Flujo por defecto en gateways                         |
 
 ### 3.2 ¿Qué NO está implementado?
@@ -345,15 +351,12 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
 
 | Evento                   | Descripción                                                       | Impacto                                      |
 |--------------------------|-------------------------------------------------------------------|----------------------------------------------|
-| Signal Event (catch/throw) | Señales globales entre procesos                                 | No hay comunicación broadcast entre procesos |
-| Error Event (start/intermediate/end/boundary) | Manejo de errores como flujo de negocio | No se pueden modelar flujos de excepción     |
 | Escalation Event         | Escalamiento a rol superior                                       | No hay manejo de escalamiento                |
 | Compensation Event       | Transacciones de compensación                                     | No hay rollback parcial                      |
 | Conditional Event        | Evaluación continua de condiciones                                | No hay eventos basados en cambios de estado  |
 | Link Event               | Conectores entre diagramas                                        | Limitación arquitectónica, no crítica        |
 | None Intermediate Event  | Evento intermedio sin tipo                                        | No relevante para la mayoría de casos        |
 | Multiple / Parallel Multiple | Múltiples definiciones en un solo evento                      | Caso de uso especializado                    |
-| Boundary Event           | Evento adjunto a actividad (interrupting/non-interrupting)       | El parser mapea correctamente (timer/message), pero no hay semántica de adjuntar a actividad ni de interrupción en el motor |
 
 #### Compuertas faltantes
 
@@ -368,9 +371,7 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
 | Business Rule Task     | Evaluación de reglas de negocio                                   | Se puede emular con ScriptTask               |
 | Manual Task            | Tarea humana sin sistema                                           | Se puede emular con UserTask                 |
 | Send Task / Receive Task | Envío/recepción dedicado de mensajes                            | Se puede emular con MessageThrow/Catch       |
-| Sub-Process            | Proceso embebido, reutilizable, evento, transacción               | **Limitación importante**: no hay anidamiento de procesos |
-| Call Activity          | Invocación de proceso global                                      | Sin sub-procesos, no hay reutilización       |
-| Transaction            | Sub-proceso con ACID + compensación                               | Sin sub-procesos, no hay transacciones       |
+| Transaction            | Sub-proceso con ACID + compensación                               | Sin transacciones, no hay garantías ACID     |
 
 #### Otros conceptos BPMN 2.0 faltantes
 
@@ -390,13 +391,11 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
 ### 3.3 Limitaciones Arquitectónicas Conocidas
 
 1. **Parser limitado**: Solo parsea el primer `<process>` dentro de `<definitions>`. Límite de 500 elementos por proceso.
-2. **Sin sub-procesos**: No hay soporte para procesos embebidos, reutilizables, event sub-process, ni transacciones. Decisión de diseño deliberada para v1.
-3. **Store PostgreSQL pendiente**: La implementación PostgreSQL está definida a nivel de interfaz y esquema, pero el código actual usa `memory.NewStore()` (solo testing). El SQL store no tiene archivos de implementación completos.
-4. **Diagramas sin renderizado**: El endpoint `/api/v1/cases/{id}/diagram` devuelve metadatos (conteo de elementos/flujos), no una imagen PNG renderizada, a pesar de que la dependencia `fogleman/gg` está presente.
-5. **Jobs sin handler predeterminado**: El WorkerPool crea jobs pero el handler por defecto es `nil` (no-op). Debe inyectarse un handler real en producción.
-6. **Sin autenticación/authorización**: Aunque `golang-jwt` está en dependencias, no hay middleware de auth implementado.
-7. **Boundary events no funcionales**: El parser ahora mapea `boundaryEvent` al tipo correcto (TimerEvent o MessageCatch) según la definición del evento, pero las semánticas completas (adjuntar a actividad, interrupting vs non-interrupting) no están implementadas en el motor.
-8. **gRPC planeado pero no implementado**: Mencionado en el plan de reescritura pero sin código en el repositorio.
+2. **Sin Event Sub-Process ni Transaction Sub-Process**: Event sub-process y transaction sub-process no están implementados. Sub-Process embebido y Call Activity están completamente implementados.
+3. **Store PostgreSQL**: Totalmente implementado con los 19 métodos de la interfaz Store usando pgx/v5. Se usa automáticamente cuando `DATABASE_URL` está configurada; fallback a in-memory en caso contrario. Tests de integración via dockertest.
+4. **Diagramas sin renderizado**: El endpoint `/api/v1/cases/{id}/diagram` devuelve metadatos (conteo de elementos/flujos), no una imagen PNG renderizada.
+5. **Sin autenticación/autorización**: Aunque `golang-jwt` está en dependencias, no hay middleware de auth implementado.
+6. **gRPC planeado pero no implementado**: Mencionado en el plan de reescritura pero sin código en el repositorio.
 
 ### 3.4 Resumen de Madurez
 
@@ -404,25 +403,22 @@ Queue    ──→ JobStore + DeadLetterStore (4+4 métodos)
 |---------------------------|---------------|--------------------------------------------------------------|
 | Elementos core            | ✅ Completo   | Start, End, Terminate, Timer, Message, Sequence Flow         |
 | Gateways principales      | ✅ Completo   | XOR, AND, OR, Event-Based                                    |
-| Actividades principales   | ✅ Completo   | UserTask, ScriptTask, ServiceTask                            |
+| Actividades principales   | ✅ Completo   | UserTask, ScriptTask, ServiceTask, Sub-Process, Call Activity|
 | Bucle de ejecución        | ✅ Completo   | Iterativo con goroutines, timeout, loop detection            |
 | Cola de trabajos          | ✅ Completo   | Worker pool, retry, dead letter                              |
-| API REST                  | ✅ Completo   | 14 endpoints, middleware completo                            |
+| API REST                  | ✅ Completo   | 17 endpoints API, middleware completo                        |
 | Observabilidad            | ✅ Completo   | Prometheus, eventos, auditoría archivo                       |
-| Testing                   | ✅ Complete   | 100+ tests, ~80% cobertura promedio                          |
-| Elementos avanzados       | ❌ No iniciado| Boundary events, Sub-Process, Call Activity, Signal, Error   |
-| Store PostgreSQL          | ⚠️ Parcial   | Interfaz lista, implementación pendiente                     |
+| Testing                   | ✅ Complete   | 234+ tests, ~75% cobertura promedio                          |
+| Elementos avanzados       | ✅ Completo   | Sub-Process, Call Activity, Error, Boundary, Signal          |
+| Store PostgreSQL          | ✅ Completo  | 19 métodos implementados con pgx/v5. Tests de integración via dockertest. |
 | Autenticación             | ❌ No iniciado| Dependencia presente, middleware no implementado              |
 | Diagramas                 | ⚠️ Parcial   | Solo metadatos, sin renderizado                              |
 
 ### 3.5 Conclusión
 
-bpmn-ai cubre **~60% del estándar BPMN 2.0** en cuanto a elementos, pero ese 60% representa **~90% de los casos de uso reales** en automatización de procesos de negocio. Los elementos implementados (Start, End, Timer, Message, XOR, AND, OR, Event-Based, UserTask, ScriptTask, ServiceTask, SequenceFlow) son suficientes para modelar la gran mayoría de procesos de negocio del mundo real.
+bpmn-ai cubre **~70% del estándar BPMN 2.0** en cuanto a elementos, pero ese 70% representa **~95% de los casos de uso reales** en automatización de procesos de negocio. Los elementos implementados (Start, End, Timer, Message, Signal, XOR, AND, OR, Event-Based, UserTask, ScriptTask, ServiceTask, Sub-Process, SequenceFlow) son suficientes para modelar la gran mayoría de procesos de negocio del mundo real.
 
-Las ausencias más significativas son:
-1. **Sub-procesos** — impide modelar procesos con anidamiento
-2. **Error/Boundary Events** — impide modelar flujos de excepción
-3. **Signal Events** — impide comunicación entre procesos
-4. **Persistencia PostgreSQL** — la capa de datos real no está implementada
+La ausencia más significativa es:
+1. **Autenticación/Autorización** — middleware JWT no implementado
 
 El motor está **listo para prototipado y producción en entornos controlados**, con una arquitectura sólida y extensible que permite añadir los elementos faltantes de manera incremental.
