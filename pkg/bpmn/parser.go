@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const (
@@ -34,6 +35,8 @@ type flowElement struct {
 
 	// Events
 	EventDefinitions []eventDefinition `xml:",any"`
+	AttachedToRef    string            `xml:"attachedToRef,attr"`
+	CancelActivity   string            `xml:"cancelActivity,attr"`
 
 	// Gateways
 	DefaultFlowID    string `xml:"default,attr"`
@@ -62,8 +65,14 @@ type flowElement struct {
 	// Condition expression as child element (used by e.g. Camunda Modeler)
 	ConditionElement string `xml:"conditionExpression"`
 
+	// Call Activity
+	CalledElement string `xml:"calledElement,attr"`
+
 	// Extension data
 	ExtensionElements *extensionElements `xml:"extensionElements"`
+
+	// Raw inner XML for sub-process parsing
+	InnerXML string `xml:",innerxml"`
 }
 
 type eventDefinition struct {
@@ -72,6 +81,8 @@ type eventDefinition struct {
 	TimerDate   string `xml:"timeDate"`
 	TimerCycle  string `xml:"timeCycle"`
 	MessageRef  string `xml:"messageRef,attr"`
+	ErrorRef    string `xml:"errorRef,attr"`
+	SignalRef   string `xml:"signalRef,attr"`
 }
 
 type extensionElements struct {
@@ -157,11 +168,15 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 			elem.Outgoing = fe.Outgoing
 			result.Elements[elem.ID] = elem
 
-		case "userTask", "scriptTask", "serviceTask", "task":
+		case "userTask", "scriptTask", "serviceTask", "task", "callActivity":
 			elem := p.parseActivity(fe)
 			elem.Incoming = fe.Incoming
 			elem.Outgoing = fe.Outgoing
 			result.Elements[elem.ID] = elem
+
+		case "subProcess":
+			elem := p.flattenSubProcess(fe, result)
+			result.Elements[fe.ID] = elem
 
 		case "sequenceFlow":
 			flow := p.parseFlow(fe)
@@ -206,6 +221,30 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 		}
 	}
 
+	// Configure sub-process exit routing: add exit flows to internal end events
+	for _, elem := range result.Elements {
+		if elem.SubProcess == nil || elem.SubProcessEnd == "" {
+			continue
+		}
+		endEvent, ok := result.Elements[elem.SubProcessEnd]
+		if !ok {
+			continue
+		}
+		// Add original (non-synthetic) outgoing flows of the sub-process
+		// to its internal end event for exit routing
+		for _, flowID := range elem.OutgoingFlows {
+			if !strings.HasSuffix(flowID, "_sp_entry") {
+				endEvent.OutgoingFlows = append(endEvent.OutgoingFlows, flowID)
+			}
+		}
+		if endEvent.ExtensionData == nil {
+			endEvent.ExtensionData = make(map[string]string)
+		}
+		exitFlows := strings.Join(endEvent.OutgoingFlows, ",")
+		endEvent.ExtensionData["subprocess_exit_flows"] = exitFlows
+		result.Elements[elem.SubProcessEnd] = endEvent
+	}
+
 	// Populate gateway conditions from flow-level conditionExpression attributes
 	for id, elem := range result.Elements {
 		if isGatewayElement(elem.Type) {
@@ -221,6 +260,159 @@ func (p *Parser) Parse(data []byte) (*Process, error) {
 	}
 
 	return result, nil
+}
+
+// parseSubProcessXML parses sub-process inner XML into a Process without
+// recursively handling nested sub-processes (to avoid infinite recursion).
+func (p *Parser) parseSubProcessXML(fe flowElement) *Process {
+	if fe.InnerXML == "" {
+		return nil
+	}
+
+	// Parse child elements from the inner XML using a token-based approach
+	// to avoid recursion through the main Parse() path
+	type spWrapper struct {
+		FlowElements []flowElement `xml:",any"`
+	}
+	var wrapper spWrapper
+	wrappedXML := fmt.Sprintf("<root>%s</root>", fe.InnerXML)
+	if err := xml.Unmarshal([]byte(wrappedXML), &wrapper); err != nil {
+		return nil
+	}
+
+	if len(wrapper.FlowElements) > 100 {
+		return nil
+	}
+
+	subProc := &Process{
+		ID:       fe.ID,
+		Name:     fe.Name,
+		Elements: make(map[string]Element),
+		Flows:    make(map[string]Flow),
+	}
+
+	for _, child := range wrapper.FlowElements {
+		switch child.XMLName.Local {
+		case "startEvent", "endEvent", "intermediateCatchEvent",
+			"intermediateThrowEvent", "boundaryEvent":
+			e := p.parseEvent(child)
+			e.Incoming = child.Incoming
+			e.Outgoing = child.Outgoing
+			subProc.Elements[e.ID] = e
+			if child.XMLName.Local == "startEvent" && subProc.StartEventID == "" {
+				subProc.StartEventID = e.ID
+			}
+
+		case "exclusiveGateway", "parallelGateway",
+			"inclusiveGateway", "eventBasedGateway":
+			e := p.parseGateway(child)
+			e.Incoming = child.Incoming
+			e.Outgoing = child.Outgoing
+			subProc.Elements[e.ID] = e
+
+		case "userTask", "scriptTask", "serviceTask", "task", "callActivity":
+			e := p.parseActivity(child)
+			e.Incoming = child.Incoming
+			e.Outgoing = child.Outgoing
+			subProc.Elements[e.ID] = e
+
+		case "sequenceFlow":
+			f := p.parseFlow(child)
+			subProc.Flows[f.ID] = f
+			extData := map[string]string{
+				"sourceRef": f.SourceRef,
+				"targetRef": f.TargetRef,
+			}
+			if f.Condition != "" {
+				extData["conditionExpression"] = f.Condition
+			}
+			if f.IsDefault {
+				extData["isDefault"] = "true"
+			}
+			subProc.Elements[f.ID] = Element{
+				ID:            f.ID,
+				Name:          f.Name,
+				Type:          ElementTypeSequenceFlow,
+				ExtensionData: extData,
+			}
+		}
+	}
+
+	// Wire flows within the sub-process
+	p.wireFlows(subProc)
+
+	// Add synthetic flows for sequence flow elements
+	for id, e := range subProc.Elements {
+		if e.Type == ElementTypeSequenceFlow {
+			if f, ok := subProc.Flows[id]; ok {
+				syntheticID := id + "_synth"
+				subProc.Flows[syntheticID] = Flow{
+					ID:        syntheticID,
+					SourceRef: id,
+					TargetRef: f.TargetRef,
+				}
+				e.OutgoingFlows = append(e.OutgoingFlows, syntheticID)
+				subProc.Elements[id] = e
+			}
+		}
+	}
+
+	return subProc
+}
+
+// flattenSubProcess flattens a sub-process's internal elements and flows
+// into the main process with prefixed IDs, and sets up synthetic entry/exit routing.
+func (p *Parser) flattenSubProcess(fe flowElement, result *Process) Element {
+	elem := Element{
+		ID:   fe.ID,
+		Name: fe.Name,
+		Type: ElementTypeSubProcess,
+	}
+
+	subProc := p.parseSubProcessXML(fe)
+	if subProc == nil {
+		return elem
+	}
+
+	elem.SubProcess = subProc
+	prefix := fe.ID + "."
+
+	// Find the first end event in the sub-process (using original unprefixed ID)
+	var subProcessEndID string
+	for id, e := range subProc.Elements {
+		if e.Type == ElementTypeEndEvent && subProcessEndID == "" {
+			subProcessEndID = prefix + id
+		}
+	}
+	elem.SubProcessEnd = subProcessEndID
+
+	// Flatten elements with prefixed IDs
+	for id, e := range subProc.Elements {
+		newID := prefix + id
+		e.ID = newID
+		result.Elements[newID] = e
+	}
+
+	// Flatten flows with prefixed source/target refs
+	for id, f := range subProc.Flows {
+		newID := prefix + id
+		f.ID = newID
+		f.SourceRef = prefix + f.SourceRef
+		f.TargetRef = prefix + f.TargetRef
+		result.Flows[newID] = f
+	}
+
+	// Create synthetic entry flow: subProcess element → internal start event
+	entryFlowID := fe.ID + "_sp_entry"
+	startID := prefix + subProc.StartEventID
+	result.Flows[entryFlowID] = Flow{
+		ID:        entryFlowID,
+		SourceRef: fe.ID,
+		TargetRef: startID,
+	}
+	elem.Outgoing = append(elem.Outgoing, entryFlowID)
+
+	return elem
 }
 
 func (p *Parser) parseEvent(fe flowElement) Element {
@@ -243,6 +435,8 @@ func (p *Parser) parseEvent(fe flowElement) Element {
 	case "boundaryEvent":
 		// Will be overridden by event definition below
 		elem.Type = ElementTypeTimerEvent
+		elem.AttachedToRef = fe.AttachedToRef
+		elem.CancelActivity = fe.CancelActivity != "false"
 	}
 
 	// Parse event definitions and override element type based on definition
@@ -270,9 +464,33 @@ func (p *Parser) parseEvent(fe flowElement) Element {
 			} else {
 				elem.Type = ElementTypeMessageThrow
 			}
+		case "signalEventDefinition":
+			elem.EventDefinition.Type = EventTypeSignal
+			elem.EventDefinition.SignalRef = ed.SignalRef
+			if fe.XMLName.Local == "intermediateCatchEvent" || fe.XMLName.Local == "boundaryEvent" || fe.XMLName.Local == "startEvent" {
+				elem.Type = ElementTypeSignalCatch
+			} else {
+				elem.Type = ElementTypeSignalThrow
+			}
 		case "terminateEventDefinition":
 			elem.Type = ElementTypeTerminateEvent
 			elem.EventDefinition.Type = EventTypeTerminate
+		case "errorEventDefinition":
+			elem.EventDefinition.Type = EventTypeError
+			elem.EventDefinition.ErrorCode = ed.ErrorRef
+			// End / intermediate throw events with error definition throw the error
+			if fe.XMLName.Local == "endEvent" || fe.XMLName.Local == "intermediateThrowEvent" {
+				elem.Type = ElementTypeErrorEnd
+			}
+			// Boundary events with error definition catch the error
+			if fe.XMLName.Local == "boundaryEvent" {
+				elem.Type = ElementTypeErrorCatch
+				elem.AttachedToRef = fe.AttachedToRef
+			}
+			// Start events with error definition catch error (for event sub-processes)
+			if fe.XMLName.Local == "startEvent" {
+				elem.Type = ElementTypeErrorCatch
+			}
 		}
 	}
 
@@ -346,10 +564,13 @@ func (p *Parser) parseActivity(fe flowElement) Element {
 	case "task":
 		elem.Type = ElementTypeUserTask
 		elem.TaskType = TaskTypeUser
+	case "callActivity":
+		elem.Type = ElementTypeCallActivity
 	}
 
 	elem.Assignee = fe.Assignee
 	elem.Duration = fe.Duration
+	elem.CalledElement = fe.CalledElement
 
 	if fe.ScriptBody != "" || fe.ScriptType != "" {
 		elem.ExtensionData = make(map[string]string)

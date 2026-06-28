@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element"
+	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/events"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/element/gateways"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/observability"
 	"github.com/Raoon-Soluciones/bpmn-ai/internal/process"
@@ -37,6 +39,9 @@ type Engine interface {
 
 	// SendMessage delivers a message to a waiting MessageCatch event.
 	SendMessage(ctx context.Context, instanceID string, messageRef string, variables map[string]any) error
+
+	// SendSignal broadcasts a signal to all waiting SignalCatch events.
+	SendSignal(ctx context.Context, signalRef string, variables map[string]any) ([]string, error)
 
 	// Registry returns the element registry.
 	Registry() *ElementRegistry
@@ -186,6 +191,24 @@ func (e *engine) Continue(ctx context.Context, instanceID string, completedFlowI
 		return fmt.Errorf("get completed flow: %w", err)
 	}
 
+	// Handle interrupting boundary events: cancel the attached activity's flow
+	if elemDef, ok := proc.Elements[flow.ElementID]; ok && elemDef.AttachedToRef != "" {
+		if elemDef.CancelActivity {
+			e.logger.Info("interrupting boundary event fired, cancelling attached activity",
+				"instance_id", instanceID,
+				"attached_to", elemDef.AttachedToRef,
+				"boundary_element", flow.ElementID,
+			)
+			e.cancelAttachedFlows(ctx, instanceID, elemDef.AttachedToRef)
+		} else {
+			e.logger.Info("non-interrupting boundary event fired",
+				"instance_id", instanceID,
+				"attached_to", elemDef.AttachedToRef,
+				"boundary_element", flow.ElementID,
+			)
+		}
+	}
+
 	// Check EventBasedGateway resolution — only the first event branch proceeds
 	if !gateways.CheckAndResolve(execCtxForGateway(instance), flow.ElementID) {
 		e.logger.Info("event-based gateway branch skipped (already resolved)",
@@ -258,6 +281,56 @@ func (e *engine) SendMessage(ctx context.Context, instanceID string, messageRef 
 	}
 
 	return fmt.Errorf("no waiting MessageCatch found for messageRef %s in instance %s", messageRef, instanceID)
+}
+
+// SendSignal broadcasts a signal to all waiting SignalCatch events across all instances.
+func (e *engine) SendSignal(ctx context.Context, signalRef string, variables map[string]any) ([]string, error) {
+	instances, err := e.store.ListInstances(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	var resumed []string
+	for _, instRec := range instances {
+		if instRec.Status == store.InstanceStatusCompleted || instRec.Status == store.InstanceStatusTerminated || instRec.Status == store.InstanceStatusError {
+			continue
+		}
+		proc, err := e.store.GetProcess(ctx, instRec.ProcessID)
+		if err != nil {
+			continue
+		}
+		flows, err := e.store.GetFlowsByInstance(ctx, instRec.ID)
+		if err != nil {
+			continue
+		}
+		for _, f := range flows {
+			if f.Status != store.FlowStatusActive {
+				continue
+			}
+			elem, ok := proc.Elements[f.ElementID]
+			if !ok || elem.Type != bpmn.ElementTypeSignalCatch {
+				continue
+			}
+			if elem.EventDefinition.SignalRef != "" && elem.EventDefinition.SignalRef != signalRef {
+				continue
+			}
+			f.Status = store.FlowStatusCompleted
+			now := time.Now()
+			f.FinishedAt = &now
+			if err := e.store.UpdateFlow(ctx, f); err != nil {
+				e.logger.Error("update signal catch flow", "error", err)
+				continue
+			}
+			if err := e.Continue(ctx, instRec.ID, f.ID, variables); err != nil {
+				e.logger.Error("continue after signal", "error", err, "instance", instRec.ID)
+				continue
+			}
+			resumed = append(resumed, instRec.ID)
+		}
+	}
+	if len(resumed) == 0 {
+		return nil, fmt.Errorf("no waiting SignalCatch found for signalRef %s", signalRef)
+	}
+	return resumed, nil
 }
 
 // runLoop executes the engine worker pool and processes results.
@@ -343,6 +416,7 @@ func (e *engine) runLoop(ctx context.Context, instance *process.Instance, initia
 				e.dispatcher.Drain()
 				return e.finalizeInstance(ctx, instance)
 			}
+			_ = allDone
 
 		case err := <-errCh:
 			e.dispatcher.Drain()
@@ -575,6 +649,11 @@ func (e *engine) handleResult(
 			},
 		})
 
+		// Schedule attached boundary timers (e.g., timer boundary on UserTask)
+		if result.FlowData != nil {
+			e.scheduleBoundaryTimers(ctx, instance, result, pendingMu, pending, workCh)
+		}
+
 	case element.ActionError:
 		fromState := instance.State
 		if err := instance.Transition(process.StateError); err != nil {
@@ -611,6 +690,50 @@ func (e *engine) handleResult(
 			}
 		}
 
+	case element.ActionThrowError:
+		elemDef, ok := instance.Process.Elements[result.FlowData.ElementID]
+		if !ok {
+			return fmt.Errorf("element %s not found", result.FlowData.ElementID)
+		}
+		errorCode := elemDef.EventDefinition.ErrorCode
+
+		// Look for a matching error boundary catch on the parent scope
+		catchID := findErrorCatch(result.FlowData.ElementID, errorCode, instance.Process)
+		if catchID == "" {
+			// No catch found — escalate as process error
+			fromState := instance.State
+			if err := instance.Transition(process.StateError); err != nil {
+				return fmt.Errorf("transition to error: %w", err)
+			}
+			errCh <- fmt.Errorf("uncaught error: code=%s element=%s", errorCode, result.FlowData.ElementID)
+			e.dispatcher.DispatchAsync(observability.Event{
+				Type:      observability.EventProcessError,
+				Timestamp: time.Now(),
+				Payload: map[string]any{
+					"instance_id":  instance.ID,
+					"process_id":   instance.ProcessID,
+					"from_state":   string(fromState),
+					"to_state":     string(process.StateError),
+					"error":        result.Error.Error(),
+				},
+			})
+			break
+		}
+
+		// Create flow record for the error catch boundary element
+		flowRec := CreateFlowRecord(instance.ID, catchID, bpmn.ElementTypeErrorCatch, result.FlowData.ThreadID, result.FlowData.ID)
+		if err := e.store.CreateFlow(ctx, flowRec); err != nil {
+			return fmt.Errorf("create error catch flow: %w", err)
+		}
+		pendingMu.Lock()
+		*pending++
+		pendingMu.Unlock()
+		select {
+		case workCh <- workItem{flow: flowRec, threadID: result.FlowData.ThreadID}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 	case element.ActionTerminate:
 		if err := instance.Transition(process.StateTerminated); err != nil {
 			return fmt.Errorf("transition to terminated: %w", err)
@@ -633,6 +756,97 @@ func (e *engine) handleResult(
 			}
 		}
 		return fmt.Errorf("process terminated by element %s", result.FlowData.ElementID)
+
+	case element.ActionCallActivity:
+		if result.CalledElement == "" {
+			// No called process — treat as pass-through
+			nextFlows := e.router.Route(result, instance.Process, result.FlowData.ThreadID)
+			for _, nf := range nextFlows {
+				if err := e.enqueueFlow(ctx, instance.ID, nf, result.FlowData.ThreadID, result.FlowData.ID, pendingMu, pending, workCh); err != nil {
+					return err
+				}
+			}
+			break
+		}
+		// Load the called process from the store
+		calledProc, err := e.store.GetProcess(ctx, result.CalledElement)
+		if err != nil {
+			return fmt.Errorf("load called process %s: %w", result.CalledElement, err)
+		}
+		if calledProc.StartEventID == "" {
+			return fmt.Errorf("called process %s has no start event", result.CalledElement)
+		}
+		// Flatten called process elements into the current process with unique prefix
+		prefix := "ca-" + result.FlowData.ElementID + "."
+		var calledEndEventID string
+		for id, el := range calledProc.Elements {
+			newID := prefix + id
+			el.ID = newID
+			for i, fid := range el.IncomingFlows {
+				el.IncomingFlows[i] = prefix + fid
+			}
+			for i, fid := range el.OutgoingFlows {
+				el.OutgoingFlows[i] = prefix + fid
+			}
+			instance.Process.Elements[newID] = el
+			if el.Type == bpmn.ElementTypeEndEvent && calledEndEventID == "" {
+				calledEndEventID = newID
+			}
+		}
+		for id, f := range calledProc.Flows {
+			newID := prefix + id
+			f.ID = newID
+			f.SourceRef = prefix + f.SourceRef
+			f.TargetRef = prefix + f.TargetRef
+			instance.Process.Flows[newID] = f
+		}
+		// Create synthetic entry flow
+		entryFlowID := prefix + "entry"
+		startID := prefix + calledProc.StartEventID
+		instance.Process.Flows[entryFlowID] = bpmn.Flow{
+			ID:        entryFlowID,
+			SourceRef: result.FlowData.ElementID,
+			TargetRef: startID,
+		}
+		// Set up exit routing on the called process end event
+		if calledEndEventID != "" {
+			if endElem, ok := instance.Process.Elements[calledEndEventID]; ok {
+				var exitFlows []string
+				elemDef, _ := instance.Process.Elements[result.FlowData.ElementID]
+				for _, flowID := range elemDef.OutgoingFlows {
+					if !strings.HasSuffix(flowID, "_sp_entry") && !strings.HasPrefix(flowID, prefix) {
+						endElem.OutgoingFlows = append(endElem.OutgoingFlows, flowID)
+						exitFlows = append(exitFlows, flowID)
+					}
+				}
+				if endElem.ExtensionData == nil {
+					endElem.ExtensionData = make(map[string]string)
+				}
+				endElem.ExtensionData["subprocess_exit_flows"] = strings.Join(exitFlows, ",")
+				instance.Process.Elements[calledEndEventID] = endElem
+			}
+		}
+		// Enqueue the entry flow to start the called process
+		flowRec := &store.FlowRecord{
+			InstanceID:  instance.ID,
+			ElementID:   startID,
+			ElementType: bpmn.ElementTypeStartEvent,
+			ThreadID:    result.FlowData.ThreadID,
+			PreviousID:  result.FlowData.ID,
+			Status:      store.FlowStatusActive,
+		}
+		if err := e.store.CreateFlow(ctx, flowRec); err != nil {
+			return fmt.Errorf("create called process entry flow: %w", err)
+		}
+		pendingMu.Lock()
+		*pending++
+		pendingMu.Unlock()
+		select {
+		case workCh <- workItem{flow: flowRec, threadID: result.FlowData.ThreadID}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 
 	case element.ActionQueue:
 		e.logger.Info("element queued for async execution",
@@ -717,6 +931,138 @@ func (c *gatewayExecCtx) GetVariable(key string) (any, bool) { return c.instance
 func (c *gatewayExecCtx) SetVariable(key string, value any)  { c.instance.SetVariable(key, value) }
 func (c *gatewayExecCtx) Store() element.ElementStore        { return nil }
 func (c *gatewayExecCtx) Element() (bpmn.Element, bool)      { return bpmn.Element{}, false }
+
+// scheduleBoundaryTimers finds boundary events (timer, message) attached to
+// the current element and creates flow records + schedules jobs.
+func (e *engine) scheduleBoundaryTimers(ctx context.Context, instance *process.Instance, result ExecutionResult, pendingMu *sync.Mutex, pending *int, workCh chan<- workItem) {
+	currentID := result.FlowData.ElementID
+	for _, elem := range instance.Process.Elements {
+		if elem.AttachedToRef != currentID {
+			continue
+		}
+		switch elem.Type {
+		case bpmn.ElementTypeTimerEvent:
+			if elem.EventDefinition.TimerValue == "" {
+				continue
+			}
+			scheduledAt := events.CalculateSchedule(elem.EventDefinition.TimerType, elem.EventDefinition.TimerValue)
+			if scheduledAt == nil {
+				continue
+			}
+			flowRec := &store.FlowRecord{
+				InstanceID:  instance.ID,
+				ElementID:   elem.ID,
+				ElementType: bpmn.ElementTypeTimerEvent,
+				ThreadID:    result.FlowData.ThreadID,
+				PreviousID:  result.FlowData.ID,
+				Status:      store.FlowStatusActive,
+			}
+			if err := e.store.CreateFlow(ctx, flowRec); err != nil {
+				e.logger.Error("failed to create boundary timer flow", "error", err)
+				continue
+			}
+			job := &store.JobRecord{
+				InstanceID:  instance.ID,
+				FlowID:      flowRec.ID,
+				Type:        "timer_continue",
+				ScheduledAt: *scheduledAt,
+				Payload: map[string]any{
+					"element_id":     elem.ID,
+					"instance_id":    instance.ID,
+					"flow_id":        flowRec.ID,
+					"attached_to":    currentID,
+					"cancel_on_fire": elem.CancelActivity,
+				},
+			}
+			if e.queue != nil {
+				_ = e.queue.Enqueue(ctx, job)
+			} else {
+				_ = e.store.CreateJob(ctx, job)
+			}
+
+		case bpmn.ElementTypeMessageCatch:
+			// Create a flow record so SendMessage can find it
+			flowRec := &store.FlowRecord{
+				InstanceID:  instance.ID,
+				ElementID:   elem.ID,
+				ElementType: bpmn.ElementTypeMessageCatch,
+				ThreadID:    result.FlowData.ThreadID,
+				PreviousID:  result.FlowData.ID,
+				Status:      store.FlowStatusActive,
+			}
+			if err := e.store.CreateFlow(ctx, flowRec); err != nil {
+				e.logger.Error("failed to create boundary message flow", "error", err)
+			}
+		}
+	}
+}
+
+// cancelAttachedFlows marks all active flows for the given element as completed,
+// used when an interrupting boundary event fires.
+func (e *engine) cancelAttachedFlows(ctx context.Context, instanceID string, attachedToRef string) {
+	flows, err := e.store.GetFlowsByInstance(ctx, instanceID)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, f := range flows {
+		if f.ElementID == attachedToRef && f.Status == store.FlowStatusActive {
+			f.Status = store.FlowStatusCompleted
+			f.FinishedAt = &now
+			_ = e.store.UpdateFlow(ctx, f)
+		}
+	}
+}
+
+// findErrorCatch looks for an error boundary catch in the parent scope
+// of the given element. Returns the catch element ID, or empty string.
+func findErrorCatch(elementID string, errorCode string, proc *bpmn.Process) string {
+	// 1. Check parent sub-process boundary (existing — prefix-based)
+	parentID := parentSubProcessID(elementID, proc)
+	if parentID != "" {
+		for id, elem := range proc.Elements {
+			if elem.Type == bpmn.ElementTypeErrorCatch && elem.AttachedToRef == parentID {
+				if elem.EventDefinition.ErrorCode == "" || elem.EventDefinition.ErrorCode == errorCode {
+					return id
+				}
+			}
+		}
+	}
+
+	// 2. Check direct attachment to the throwing element (error boundary on top-level activity)
+	for id, elem := range proc.Elements {
+		if elem.Type == bpmn.ElementTypeErrorCatch && elem.AttachedToRef == elementID {
+			if elem.EventDefinition.ErrorCode == "" || elem.EventDefinition.ErrorCode == errorCode {
+				return id
+			}
+		}
+	}
+
+	// 3. Check for error start events (AttachedToRef is empty — global error catch)
+	for id, elem := range proc.Elements {
+		if elem.Type == bpmn.ElementTypeErrorCatch && elem.AttachedToRef == "" {
+			if elem.EventDefinition.ErrorCode == "" || elem.EventDefinition.ErrorCode == errorCode {
+				return id
+			}
+		}
+	}
+
+	return ""
+}
+
+// parentSubProcessID returns the sub-process element ID that contains the given element,
+// determined by checking if the element ID has a "{subprocessID}." prefix.
+func parentSubProcessID(elementID string, proc *bpmn.Process) string {
+	dotIdx := strings.Index(elementID, ".")
+	if dotIdx <= 0 {
+		return ""
+	}
+	potentialID := elementID[:dotIdx]
+	if elem, ok := proc.Elements[potentialID]; ok && elem.Type == bpmn.ElementTypeSubProcess {
+		return potentialID
+	}
+	return ""
+}
 
 func isEndEvent(elementID string, proc *bpmn.Process) bool {
 	elem, ok := proc.Elements[elementID]

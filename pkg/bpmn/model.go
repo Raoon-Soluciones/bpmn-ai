@@ -20,6 +20,12 @@ const (
 	ElementTypeScriptTask      ElementType = "scriptTask"
 	ElementTypeServiceTask     ElementType = "serviceTask"
 	ElementTypeSequenceFlow    ElementType = "sequenceFlow"
+	ElementTypeSubProcess      ElementType = "subProcess"
+	ElementTypeErrorCatch      ElementType = "errorCatch"
+	ElementTypeErrorEnd        ElementType = "errorEnd"
+	ElementTypeCallActivity    ElementType = "callActivity"
+	ElementTypeSignalThrow    ElementType = "signalThrow"
+	ElementTypeSignalCatch    ElementType = "signalCatch"
 )
 
 // Process represents a parsed BPMN 2.0 process definition.
@@ -60,6 +66,17 @@ type Element struct {
 	CandidateGroups []string
 	Duration       string // ISO 8601 duration for timer tasks
 
+	// Boundary event attributes
+	AttachedToRef  string // element ID this boundary event is attached to
+	CancelActivity bool   // true = interrupting (cancel attached activity), false = non-interrupting
+
+	// Sub-Process attributes
+	SubProcess    *Process // non-nil for sub-process elements
+	SubProcessEnd string   // element ID of the sub-process internal end event
+
+	// Call Activity attributes
+	CalledElement string // ID of the called process
+
 	// Extension attributes
 	ExtensionData map[string]string
 }
@@ -80,6 +97,8 @@ type EventDefinition struct {
 	TimerType  TimerType // cron, duration, date
 	TimerValue string    // cron expression, ISO 8601 duration, or date
 	MessageRef string    // message reference for message events
+	ErrorCode  string    // error code for error events
+	SignalRef  string    // signal reference for signal events
 }
 
 // EventType represents the type of BPMN event.
@@ -90,6 +109,8 @@ const (
 	EventTypeTimer     EventType = "timer"
 	EventTypeMessage   EventType = "message"
 	EventTypeTerminate EventType = "terminate"
+	EventTypeError     EventType = "error"
+	EventTypeSignal    EventType = "signal"
 )
 
 // TimerType represents how a timer is defined.

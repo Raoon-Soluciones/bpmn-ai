@@ -19,7 +19,9 @@ const (
 	ActionComplete  Action = "COMPLETE"
 	ActionSkip      Action = "SKIP"
 	ActionQueue     Action = "QUEUE"
-	ActionTerminate Action = "TERMINATE"
+	ActionTerminate  Action = "TERMINATE"
+	ActionThrowError   Action = "THROW_ERROR"
+	ActionCallActivity Action = "CALL_ACTIVITY"
 )
 
 // ExecutionResult is the result of executing a BPMN element.
@@ -30,7 +32,8 @@ type ExecutionResult struct {
 	FlowFilters []string
 	Error       error
 	DurationMs  int
-	ContinueAt  *time.Time // scheduled continuation time (e.g., for TimerEvent)
+	ContinueAt   *time.Time // scheduled continuation time (e.g., for TimerEvent)
+	CalledElement string   // process ID to invoke (for CallActivity)
 }
 
 // Element is the base interface for all BPMN elements.

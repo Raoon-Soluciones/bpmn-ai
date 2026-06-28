@@ -44,7 +44,7 @@ func (e *TimerEvent) Execute(_ context.Context, execCtx element.ExecutionContext
 		}
 	}
 
-	scheduledAt := calculateSchedule(e.eventDef.TimerType, e.eventDef.TimerValue)
+	scheduledAt := CalculateSchedule(e.eventDef.TimerType, e.eventDef.TimerValue)
 
 	execCtx.SetVariable("timer_type", string(e.eventDef.TimerType))
 	execCtx.SetVariable("timer_value", e.eventDef.TimerValue)
@@ -70,8 +70,8 @@ func timerEventKey(elemID string) string {
 	return fmt.Sprintf("timer:%s", elemID)
 }
 
-// calculateSchedule computes the next fire time for the timer.
-func calculateSchedule(timerType bpmn.TimerType, timerValue string) *time.Time {
+// CalculateSchedule computes the next fire time for the timer.
+func CalculateSchedule(timerType bpmn.TimerType, timerValue string) *time.Time {
 	switch timerType {
 	case bpmn.TimerTypeDuration:
 		d, err := parseISODuration(timerValue)
